@@ -437,7 +437,7 @@ $rows = $results | ForEach-Object {
 
 $detailsHtml = $detailBlobs | ForEach-Object {
   # Render per-test collapsible blocks
-  $perTests = ($_ .PerTestOutput).GetEnumerator() | ForEach-Object {
+  $perTests = ($_.PerTestOutput).GetEnumerator() | ForEach-Object {
 @"
   <details>
     <summary><strong>DCDIAG Test:</strong> $($_.Key)</summary>
