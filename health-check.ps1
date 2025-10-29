@@ -1,77 +1,3 @@
-<#
-.SYNOPSIS
-  Active Directory Health Check with modern HTML report and email delivery (SMTP or Microsoft Graph).
-
-.DESCRIPTION
-  Collects health from Domain Controllers (Ping, Services, DCDiag targeted tests, Repadmin),
-  optionally collects basic hardware stats (uptime, C: free, memory),
-  renders a clean HTML report (dark theme) and sends it by email if configured.
-
-.NOTES
-  Requirements: PowerShell 5.1+ (or 7+), RSAT ActiveDirectory, dcdiag.exe, repadmin.exe.
-  Permissions: rights to query DCs and run dcdiag/repadmin remotely.
-
-.PARAMETER UsingOU
-  If set, discover DCs by querying the Domain Controllers OU.
-
-.PARAMETER OrganizationUnitDN
-  DN of the OU containing the DCs (default: "OU=Domain Controllers,<current domain DN>").
-
-.PARAMETER DomainControllers
-  Explicit list of DCs (FQDN/hostnames). Ignored if UsingOU is true.
-
-.PARAMETER IncludeHardware
-  Collect OS disk (C:) and free memory via CIM/WMI.
-
-.PARAMETER OutputPath
-  Final HTML path (default: .\ADHealthReport.html). CSV optional in the same directory.
-
-.PARAMETER Csv
-  Also export a CSV summary.
-
-.PARAMETER EmailOnErrorOnly
-  Only send email when there are failures/warnings.
-
-# SMTP
-.PARAMETER SmtpServer
-  SMTP server (e.g., smtp.office365.com).
-
-.PARAMETER SmtpPort
-  SMTP port (default 587).
-
-.PARAMETER SmtpUseSsl
-  Use TLS/SSL on SMTP.
-
-.PARAMETER From
-  Email sender.
-
-.PARAMETER To
-  Email recipients (string[]).
-
-.PARAMETER Subject
-  Email subject.
-
-.PARAMETER Credential
-  SMTP credentials (Get-Credential). Avoid clear-text passwords.
-
-# Microsoft Graph
-.PARAMETER UseGraph
-  If specified, sends email via Microsoft Graph (delegated).
-
-.PARAMETER GraphSenderUpn
-  Sender UPN for Send-MgUserMail (e.g., reports@yourdomain.com).
-
-.EXAMPLE
-  .\Invoke-ADHealthReport.ps1 -UsingOU -IncludeHardware -Csv `
-    -SmtpServer smtp.office365.com -SmtpPort 587 -SmtpUseSsl `
-    -From 'ad-health@contoso.com' -To 'infra@contoso.com' `
-    -Subject 'AD Health - Daily' -Credential (Get-Credential)
-
-.EXAMPLE
-  .\Invoke-ADHealthReport.ps1 -DomainControllers dc1.contoso.com,dc2.contoso.com `
-    -UseGraph -GraphSenderUpn 'ad-health@contoso.com' -To 'secops@contoso.com' -IncludeHardware
-#>
-
 [CmdletBinding()]
 param(
   [switch]$UsingOU,
@@ -148,10 +74,6 @@ function Invoke-DcDiag {
 }
 
 function Invoke-DcDiagTest {
-  <#
-    Runs a single targeted DCDiag test.
-    Returns PSCustomObject: @{ Test='Advertising'; Status='OK'|'FAIL'; Output='<raw text>' }
-  #>
   param(
     [string]$Server,
     [string]$TestName
@@ -160,7 +82,6 @@ function Invoke-DcDiagTest {
   $text = $res.Output + "`n" + $res.Error
   $isFail = $false
 
-  # Robust fail heuristics: exit code non-zero OR typical fail/error tokens, ignoring false positives like "0 failed".
   if ($res.ExitCode -ne 0) { $isFail = $true }
   elseif ($text -match '(?i)\b(fail|failed|error|erro)\b' -and $text -notmatch '(?i)\b0 failed\b') { $isFail = $true }
 
@@ -189,10 +110,6 @@ function Try-GetWmi {
 }
 
 function Get-HardwareInfo {
-  <#
-    Returns PSCustomObject with values or $null when unknown.
-    Uses CIM, falls back to legacy WMI.
-  #>
   param([string]$Server)
 
   $os = Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $Server -ErrorAction SilentlyContinue
@@ -266,7 +183,6 @@ $allDCs = Get-DCList -UsingOU:$UsingOU -OrganizationUnitDN $OrganizationUnitDN -
 $results = @()
 $detailBlobs = @()
 
-# DCDiag tests to run and show as columns (matches screenshot semantics)
 $dcdiagTests = @(
   'Connectivity',
   'Advertising',
@@ -275,7 +191,6 @@ $dcdiagTests = @(
   'Replications',
   'Topology',
   'SysVolCheck',
-  # FSMO will be a composite of the 2 below; still collect for details
   'KnowsOfRoleHolders',
   'RidManager'
 )
@@ -283,14 +198,11 @@ $dcdiagTests = @(
 foreach ($dc in $allDCs) {
   Write-Verbose "Collecting $dc ..."
 
-  # Basic checks
   $pingOk = Test-Connection -ComputerName $dc -Count 1 -Quiet -ErrorAction SilentlyContinue
   $svc    = Test-Services -Server $dc
 
-  # DCDiag summary (kept for details)
   $diag = Invoke-DcDiag -Server $dc
 
-  # Run targeted DCDiag tests
   $testResults = @{}
   $testOutputs = @{}
   foreach ($t in $dcdiagTests) {
@@ -299,15 +211,12 @@ foreach ($dc in $allDCs) {
     $testOutputs[$t] = $tres.Output
   }
 
-  # Composite FSMO: FAIL if any of the two fails
   $fsmStatus = if ($testResults['KnowsOfRoleHolders'] -eq 'FAIL' -or $testResults['RidManager'] -eq 'FAIL') { 'FAIL' } else { 'OK' }
 
-  # Repadmin check (independent perspective)
   $rep  = Invoke-RepAdmin -Server $dc
   $repFail = ($rep.Output -match '(?i)\b(fail|failed|error|erro)\b')
   $repStatus = if ($repFail) { 'FAIL' } else { 'OK' }
 
-  # Hardware (optional)
   $hw = $null
   if ($IncludeHardware) { $hw = Get-HardwareInfo -Server $dc }
 
@@ -357,7 +266,6 @@ $fsmo = [pscustomobject]@{
 # ===================== Metrics/Summary =====================
 $total = $results.Count
 
-# Count fails across key health columns (do not include hardware)
 $healthColumns = @(
   'Ping','DNS_Service','NTDS_Service','NetLogon_Service',
   'Connectivity','Advertising','NetLogons','ServicesTest',
@@ -377,66 +285,121 @@ if ($Csv) {
 # ===================== HTML =====================
 $css = @"
 <style>
-  body { font-family: Segoe UI, Roboto, Arial, sans-serif; margin: 0; background:#0f172a; color:#e2e8f0;}
-  .container { max-width:1200px; margin:40px auto; padding:0 16px;}
-  .card { background:#111827; border:1px solid #1f2937; border-radius:10px; padding:20px; margin-bottom:20px; box-shadow:0 10px 30px rgba(0,0,0,.35); }
-  h1,h2,h3 { color:#e5e7eb; margin-top:0 }
-  .muted { color:#94a3b8; }
-  .grid { display:grid; grid-template-columns: repeat(12, 1fr); gap:16px;}
-  .col-3 { grid-column: span 3; } .col-12 { grid-column: span 12; }
-  .tile { background:#0b1220; border:1px solid #1f2937; border-radius:10px; padding:16px; text-align:center;}
-  .tile .k { font-size:12px; color:#9ca3af; } .tile .v { font-size:28px; font-weight:700; color:#fff; }
-  table { width:100%; border-collapse: collapse; }
-  th,td { padding:10px 12px; border-bottom:1px solid #1f2937; vertical-align:top}
-  th { text-align:left; background:#0b1220; color:#cbd5e1; position:sticky; top:0; }
-  .badge { display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:700; }
-  .ok { background:#064e3b; color:#a7f3d0; border:1px solid #10b981; }
-  .fail { background:#7f1d1d; color:#fecaca; border:1px solid #ef4444; }
-  .na { background:#374151; color:#e5e7eb; border:1px solid #6b7280; }
-  details { background:#0b1220; border:1px solid #1f2937; border-radius:8px; padding:12px; margin-bottom:10px; }
-  summary { cursor:pointer; font-weight:600; color:#e5e7eb; }
-  pre { white-space: pre-wrap; color:#e2e8f0; }
-  .footer { font-size:12px; color:#94a3b8; margin-top:24px; }
-  a { color:#93c5fd; }
-  .nowrap { white-space:nowrap; }
-  .scroll-x { overflow:auto; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Roboto, Arial, sans-serif; margin: 0; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #e2e8f0; padding: 20px; }
+  .container { max-width: 1400px; margin: 0 auto; }
+  .card { background: rgba(17, 24, 39, 0.95); border: 1px solid #1f2937; border-radius: 12px; padding: 24px; margin-bottom: 24px; box-shadow: 0 10px 40px rgba(0,0,0,.4); backdrop-filter: blur(10px); }
+  h1 { color: #f9fafb; margin: 0 0 8px 0; font-size: 32px; font-weight: 700; }
+  h2 { color: #e5e7eb; margin: 0 0 20px 0; font-size: 22px; font-weight: 600; border-bottom: 2px solid #374151; padding-bottom: 10px; }
+  h3 { color: #cbd5e1; font-size: 16px; margin: 20px 0 10px 0; }
+  .muted { color: #94a3b8; font-size: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 20px; }
+  .tile { background: linear-gradient(135deg, #1e293b 0%, #0b1220 100%); border: 1px solid #334155; border-radius: 10px; padding: 20px; text-align: center; transition: transform 0.2s, box-shadow 0.2s; }
+  .tile:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.3); }
+  .tile .k { font-size: 13px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .tile .v { font-size: 32px; font-weight: 700; color: #fff; }
+  
+  .dc-card { background: #0b1220; border: 1px solid #1f2937; border-radius: 10px; padding: 20px; margin-bottom: 16px; transition: all 0.2s; }
+  .dc-card:hover { border-color: #3b82f6; box-shadow: 0 4px 16px rgba(59, 130, 246, 0.1); }
+  .dc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #1f2937; }
+  .dc-name { font-size: 18px; font-weight: 600; color: #f9fafb; }
+  .dc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .dc-item { background: #151f30; padding: 12px; border-radius: 6px; border-left: 3px solid #374151; }
+  .dc-item-label { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .dc-item-value { display: flex; align-items: center; gap: 8px; }
+  
+  .badge { display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+  .ok { background: rgba(6, 78, 59, 0.3); color: #6ee7b7; border: 1px solid #10b981; }
+  .fail { background: rgba(127, 29, 29, 0.3); color: #fca5a5; border: 1px solid #ef4444; }
+  .na { background: rgba(55, 65, 81, 0.3); color: #e5e7eb; border: 1px solid #6b7280; }
+  
+  .icon { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .icon-ok { background: #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.5); }
+  .icon-fail { background: #ef4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.5); }
+  
+  details { background: #0b1220; border: 1px solid #1f2937; border-radius: 8px; padding: 16px; margin-bottom: 12px; transition: all 0.2s; }
+  details:hover { border-color: #374151; }
+  details[open] { background: #0d1829; }
+  summary { cursor: pointer; font-weight: 600; color: #e5e7eb; user-select: none; padding: 4px 0; }
+  summary:hover { color: #60a5fa; }
+  pre { white-space: pre-wrap; color: #cbd5e1; background: #030712; padding: 16px; border-radius: 6px; font-size: 12px; line-height: 1.6; overflow-x: auto; border: 1px solid #1f2937; }
+  
+  ul { list-style: none; padding: 0; }
+  ul li { padding: 8px 0; color: #cbd5e1; border-bottom: 1px solid #1f2937; }
+  ul li:last-child { border-bottom: none; }
+  ul li b { color: #e5e7eb; font-weight: 600; min-width: 180px; display: inline-block; }
+  
+  .footer { font-size: 12px; color: #64748b; margin-top: 32px; text-align: center; padding: 20px; border-top: 1px solid #1f2937; }
+  a { color: #60a5fa; text-decoration: none; transition: color 0.2s; }
+  a:hover { color: #93c5fd; }
+  
+  .status-summary { display: flex; gap: 8px; flex-wrap: wrap; }
+  
+  @media (max-width: 768px) {
+    .dc-grid { grid-template-columns: 1fr; }
+    .grid { grid-template-columns: 1fr; }
+  }
 </style>
 "@
 
 function Badge($val){
-  if ($val -eq 'OK') { '<span class="badge ok">OK</span>' }
-  elseif ($val -eq 'FAIL') { '<span class="badge fail">FAIL</span>' }
-  else { '<span class="badge na">N/A</span>' }
+  $icon = if ($val -eq 'OK') { '<span class="icon icon-ok"></span>' }
+          elseif ($val -eq 'FAIL') { '<span class="icon icon-fail"></span>' }
+          else { '' }
+  
+  if ($val -eq 'OK') { "$icon <span class='badge ok'>OK</span>" }
+  elseif ($val -eq 'FAIL') { "$icon <span class='badge fail'>FAIL</span>" }
+  else { "<span class='badge na'>N/A</span>" }
 }
 
-$rows = $results | ForEach-Object {
+$dcCards = $results | ForEach-Object {
+  $statusItems = @(
+    @{Label='Ping'; Value=$_.Ping},
+    @{Label='DNS Service'; Value=$_.DNS_Service},
+    @{Label='NTDS Service'; Value=$_.NTDS_Service},
+    @{Label='NetLogon'; Value=$_.NetLogon_Service},
+    @{Label='Connectivity'; Value=$_.Connectivity},
+    @{Label='Advertising'; Value=$_.Advertising},
+    @{Label='NetLogons'; Value=$_.NetLogons},
+    @{Label='Services'; Value=$_.ServicesTest},
+    @{Label='Replications'; Value=$_.ReplicationsTest},
+    @{Label='RepAdmin'; Value=$_.Replication_RepAdmin},
+    @{Label='FSMO'; Value=$_.FSMO},
+    @{Label='SysVol'; Value=$_.SysVol},
+    @{Label='Topology'; Value=$_.Topology}
+  )
+  
+  if ($IncludeHardware) {
+    $statusItems += @(
+      @{Label='Uptime (h)'; Value=$(Show-NA $_.UptimeHours)},
+      @{Label='Disk C: Free'; Value=$(Show-NA $_.DiskC_FreePct '%')},
+      @{Label='Mem Free'; Value=$(Show-NA $_.MemFreeGB ' GB')}
+    )
+  }
+  
+  $itemsHtml = $statusItems | ForEach-Object {
+    $badgeHtml = if ($_.Value -match '^[0-9.]+' -or $_.Value -eq 'N/A') { $_.Value } else { Badge $_.Value }
+    @"
+    <div class="dc-item">
+      <div class="dc-item-label">$($_.Label)</div>
+      <div class="dc-item-value">$badgeHtml</div>
+    </div>
+"@
+  } | Out-String
+
   @"
-<tr>
-  <td>$($_.DC)</td>
-  <td>$(Badge $_.Ping)</td>
-  <td>$(Badge $_.DNS_Service)</td>
-  <td>$(Badge $_.NTDS_Service)</td>
-  <td>$(Badge $_.NetLogon_Service)</td>
-
-  <td>$(Badge $_.Connectivity)</td>
-  <td>$(Badge $_.Advertising)</td>
-  <td>$(Badge $_.NetLogons)</td>
-  <td>$(Badge $_.ServicesTest)</td>
-  <td>$(Badge $_.ReplicationsTest)</td>
-  <td>$(Badge $_.Replication_RepAdmin)</td>
-  <td>$(Badge $_.FSMO)</td>
-  <td>$(Badge $_.SysVol)</td>
-  <td>$(Badge $_.Topology)</td>
-
-  <td class="nowrap">$(Show-NA $_.UptimeHours)</td>
-  <td class="nowrap">$(Show-NA $_.DiskC_FreePct '%')</td>
-  <td class="nowrap">$(Show-NA $_.MemFreeGB ' GB')</td>
-</tr>
+<div class="dc-card">
+  <div class="dc-header">
+    <div class="dc-name">$($_.DC)</div>
+  </div>
+  <div class="dc-grid">
+    $itemsHtml
+  </div>
+</div>
 "@
 } | Out-String
 
 $detailsHtml = $detailBlobs | ForEach-Object {
-  # Render per-test collapsible blocks
   $perTests = ($_.PerTestOutput).GetEnumerator() | ForEach-Object {
 @"
   <details>
@@ -449,18 +412,18 @@ $detailsHtml = $detailBlobs | ForEach-Object {
 @"
 <details>
   <summary>Diagnostics Details — <strong>$($_.DC)</strong></summary>
-  <h4>Overall DCDIAG (/c /v)</h4>
+  <h3>Overall DCDIAG (/c /v)</h3>
   <pre>$([System.Web.HttpUtility]::HtmlEncode($_.DcDiagText))</pre>
-  <h4>REPADMIN</h4>
+  <h3>REPADMIN</h3>
   <pre>$([System.Web.HttpUtility]::HtmlEncode($_.RepAdminText))</pre>
-  <h4>Per-Test Outputs</h4>
+  <h3>Per-Test Outputs</h3>
   $perTests
 </details>
 "@
 } | Out-String
 
 $fsmoHtml = @"
-<ul class="muted">
+<ul>
   <li><b>Schema Master:</b> $($fsmo.SchemaMaster)</li>
   <li><b>Domain Naming Master:</b> $($fsmo.DomainNamingMaster)</li>
   <li><b>PDC Emulator:</b> $($fsmo.PDCEmulator)</li>
@@ -474,6 +437,7 @@ $html = @"
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Active Directory Health Report</title>
 $css
 </head>
@@ -481,47 +445,30 @@ $css
   <div class="container">
     <div class="card">
       <h1>Active Directory — Health Report</h1>
-      <div class="muted">Generated: $(Get-Date) — Domain: $($domain.DNSRoot)</div>
-      <div class="grid" style="margin-top:16px;">
-        <div class="col-3"><div class="tile"><div class="k">Domain Controllers</div><div class="v">$total</div></div></div>
-        <div class="col-3"><div class="tile"><div class="k">Total Failures</div><div class="v">$failCount</div></div></div>
-        <div class="col-3"><div class="tile"><div class="k">Forest</div><div class="v">$($forest.Name)</div></div></div>
-        <div class="col-3"><div class="tile"><div class="k">Domain</div><div class="v">$($domain.DNSRoot)</div></div></div>
+      <div class="muted">Generated: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss") — Domain: $($domain.DNSRoot)</div>
+      <div class="grid">
+        <div class="tile">
+          <div class="k">Domain Controllers</div>
+          <div class="v">$total</div>
+        </div>
+        <div class="tile">
+          <div class="k">Total Failures</div>
+          <div class="v" style="color: $(if($failCount -gt 0){'#ef4444'}else{'#10b981'})">$failCount</div>
+        </div>
+        <div class="tile">
+          <div class="k">Forest</div>
+          <div class="v" style="font-size: 20px;">$($forest.Name)</div>
+        </div>
+        <div class="tile">
+          <div class="k">Domain</div>
+          <div class="v" style="font-size: 20px;">$($domain.DNSRoot)</div>
+        </div>
       </div>
     </div>
 
     <div class="card">
-      <h2>Per-DC Summary</h2>
-      <div class="scroll-x" style="max-height:560px;">
-      <table>
-        <thead>
-          <tr>
-            <th>DC</th>
-            <th>Ping</th>
-            <th>Service DNS</th>
-            <th>Service NTDS</th>
-            <th>Service NetLogon</th>
-
-            <th>Connectivity</th>
-            <th>Advertising</th>
-            <th>NetLogons</th>
-            <th>Services (DCDiag)</th>
-            <th>Replications (DCDiag)</th>
-            <th>Replication (RepAdmin)</th>
-            <th>FSMO</th>
-            <th>SysVol</th>
-            <th>Topology</th>
-
-            <th>Uptime (h)</th>
-            <th>C: Free (%)</th>
-            <th>Mem Free</th>
-          </tr>
-        </thead>
-        <tbody>
-        $rows
-        </tbody>
-      </table>
-      </div>
+      <h2>Domain Controllers Status</h2>
+      $dcCards
     </div>
 
     <div class="card">
@@ -530,12 +477,12 @@ $css
     </div>
 
     <div class="card">
-      <h2>Details</h2>
+      <h2>Detailed Diagnostics</h2>
       $detailsHtml
     </div>
 
     <div class="footer">
-      Report generated by Invoke-ADHealthReport.ps1 — inspired by the legacy vbs-ad-health-report concept.
+      Report generated by Invoke-ADHealthReport.ps1
     </div>
   </div>
 </body>
@@ -594,10 +541,9 @@ if ($shouldSend -and ($To -and $To.Count -gt 0)) {
 }
 
 # ===================== Final output =====================
-Write-Host "Report saved at: $fullPath"
-if ($Csv -and (Test-Path $csvPath)) { Write-Host "CSV saved at: $csvPath" }
+Write-Host "Report saved at: $fullPath" -ForegroundColor Green
+if ($Csv -and (Test-Path $csvPath)) { Write-Host "CSV saved at: $csvPath" -ForegroundColor Green }
 if ($shouldSend -and ($To -and $To.Count -gt 0)) {
-  Write-Host "Email sent."
+  Write-Host "Email sent successfully." -ForegroundColor Green
 } elseif (-not $shouldSend -and $EmailOnErrorOnly) {
-  Write-Host "No failures — email suppressed (EmailOnErrorOnly)."
-}
+  Write-Host "No failures detected — email
