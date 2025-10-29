@@ -546,4 +546,5 @@ if ($Csv -and (Test-Path $csvPath)) { Write-Host "CSV saved at: $csvPath" -Foreg
 if ($shouldSend -and ($To -and $To.Count -gt 0)) {
   Write-Host "Email sent successfully." -ForegroundColor Green
 } elseif (-not $shouldSend -and $EmailOnErrorOnly) {
-  Write-Host "No failures detected — email
+  Write-Host "No failures detected — email suppressed (EmailOnErrorOnly)." -ForegroundColor Yellow
+}
