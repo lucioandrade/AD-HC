@@ -114,6 +114,37 @@ function Try-GetWmi {
   } catch { $null }
 }
 
+function Get-CPUUsage {
+  param([string]$Server)
+  
+  try {
+    Write-Verbose "Measuring CPU usage for $Server (10 seconds)..."
+    
+    # First sample
+    $cpu1 = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -ComputerName $Server -Filter "Name='_Total'" -ErrorAction Stop
+    if (-not $cpu1) {
+      $cpu1 = Try-GetWmi -Class Win32_PerfFormattedData_PerfOS_Processor -ComputerName $Server -Filter "Name='_Total'"
+    }
+    
+    Start-Sleep -Seconds 10
+    
+    # Second sample
+    $cpu2 = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -ComputerName $Server -Filter "Name='_Total'" -ErrorAction Stop
+    if (-not $cpu2) {
+      $cpu2 = Try-GetWmi -Class Win32_PerfFormattedData_PerfOS_Processor -ComputerName $Server -Filter "Name='_Total'"
+    }
+    
+    if ($cpu2) {
+      return [Math]::Round($cpu2.PercentProcessorTime, 1)
+    }
+    
+    return $null
+  } catch {
+    Write-Verbose "Failed to get CPU for $Server : $_"
+    return $null
+  }
+}
+
 function Get-HardwareInfo {
   param([string]$Server)
 
@@ -129,6 +160,9 @@ function Get-HardwareInfo {
       if ($disk) { $disks += $disk }
     }
   }
+
+  # Get CPU usage (10 second measurement)
+  $cpuUsage = Get-CPUUsage -Server $Server
 
   $memTotalGB = if ($os) { [Math]::Round($os.TotalVisibleMemorySize/1MB,1) } else { $null }
   $memFreeGB  = if ($os) { [Math]::Round($os.FreePhysicalMemory/1MB,1) } else { $null }
@@ -154,6 +188,7 @@ function Get-HardwareInfo {
 
   [pscustomobject]@{
     UptimeHours = $uptime
+    CPUUsagePct = $cpuUsage
     MemTotalGB  = $memTotalGB
     MemUsedGB   = $memUsedGB
     MemFreeGB   = $memFreeGB
@@ -329,16 +364,17 @@ $css = @"
   .dc-item-label { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
   .dc-item-value { display: flex; align-items: center; gap: 8px; }
   
+  /* COMPACT HARDWARE SECTION */
   .hw-section { background: #0d1829; border: 1px solid #1f2937; border-radius: 8px; padding: 16px; margin-top: 16px; }
-  .hw-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; }
-  .hw-item { }
-  .hw-label { font-size: 12px; color: #9ca3af; margin-bottom: 8px; display: flex; justify-content: space-between; }
-  .hw-bar-container { background: #1e293b; border-radius: 8px; height: 24px; overflow: hidden; position: relative; }
-  .hw-bar { height: 100%; border-radius: 8px; transition: width 0.3s ease; display: flex; align-items: center; padding: 0 8px; font-size: 11px; font-weight: 600; }
+  .hw-compact { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .hw-metric { flex: 1; min-width: 180px; }
+  .hw-metric-label { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; display: flex; justify-content: space-between; }
+  .hw-metric-value { font-size: 13px; font-weight: 600; color: #e5e7eb; }
+  .hw-bar-mini { background: #1e293b; border-radius: 4px; height: 8px; overflow: hidden; position: relative; margin-top: 4px; }
+  .hw-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
   .hw-bar-good { background: linear-gradient(90deg, #10b981 0%, #059669 100%); }
   .hw-bar-warning { background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%); }
   .hw-bar-critical { background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%); }
-  .disk-list { display: flex; flex-direction: column; gap: 12px; }
   
   .badge { display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
   .ok { background: rgba(6, 78, 59, 0.3); color: #6ee7b7; border: 1px solid #10b981; }
@@ -349,11 +385,23 @@ $css = @"
   .icon-ok { background: #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.5); }
   .icon-fail { background: #ef4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.5); }
   
-  .repl-table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-  .repl-table th, .repl-table td { padding: 12px; text-align: left; border-bottom: 1px solid #1f2937; }
-  .repl-table th { background: #0b1220; color: #cbd5e1; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
-  .repl-table td { color: #e2e8f0; }
-  .repl-table tr:hover { background: #0d1829; }
+  /* ENHANCED REPLICATION TABLE */
+  .repl-table-wrapper { overflow-x: auto; margin-top: 16px; border-radius: 8px; border: 1px solid #1f2937; }
+  .repl-table { width: 100%; border-collapse: collapse; }
+  .repl-table thead { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); position: sticky; top: 0; z-index: 10; }
+  .repl-table th { padding: 16px 12px; text-align: left; color: #cbd5e1; font-size: 12px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; border-bottom: 2px solid #374151; white-space: nowrap; }
+  .repl-table tbody tr { transition: all 0.2s; border-bottom: 1px solid #1f2937; }
+  .repl-table tbody tr:hover { background: rgba(59, 130, 246, 0.05); }
+  .repl-table tbody tr:last-child { border-bottom: none; }
+  .repl-table td { padding: 14px 12px; color: #e2e8f0; font-size: 13px; }
+  .repl-table td:first-child { font-weight: 600; color: #f9fafb; }
+  .repl-status-good { color: #6ee7b7; font-weight: 600; }
+  .repl-status-warn { color: #fbbf24; font-weight: 600; }
+  .repl-status-error { color: #fca5a5; font-weight: 600; }
+  .repl-badge { display: inline-block; padding: 4px 10px; border-radius: 8px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  .repl-badge-success { background: rgba(6, 78, 59, 0.3); color: #6ee7b7; border: 1px solid #10b981; }
+  .repl-badge-warning { background: rgba(146, 64, 14, 0.3); color: #fbbf24; border: 1px solid #f59e0b; }
+  .repl-badge-error { background: rgba(127, 29, 29, 0.3); color: #fca5a5; border: 1px solid #ef4444; }
   
   details { background: #0b1220; border: 1px solid #1f2937; border-radius: 8px; padding: 16px; margin-bottom: 12px; transition: all 0.2s; }
   details:hover { border-color: #374151; }
@@ -371,8 +419,6 @@ $css = @"
   a { color: #60a5fa; text-decoration: none; transition: color 0.2s; }
   a:hover { color: #93c5fd; }
   
-  .status-summary { display: flex; gap: 8px; flex-wrap: wrap; }
-  
   .detail-section { display: none; margin-top: 16px; padding: 16px; background: #030712; border-radius: 8px; border: 1px solid #1f2937; }
   .detail-section.active { display: block; animation: fadeIn 0.3s ease; }
   
@@ -384,7 +430,8 @@ $css = @"
   @media (max-width: 768px) {
     .dc-grid { grid-template-columns: 1fr; }
     .grid { grid-template-columns: 1fr; }
-    .hw-grid { grid-template-columns: 1fr; }
+    .hw-compact { flex-direction: column; }
+    .hw-metric { min-width: 100%; }
   }
 </style>
 "@
@@ -430,58 +477,70 @@ $dcCards = $results | ForEach-Object {
 "@
   } | Out-String
 
-  # Hardware info
+  # COMPACT Hardware info with CPU
   $hw = $_.Hardware
   $hwHtml = ""
   
   if ($hw) {
-    # Uptime
-    $uptimeHtml = "<div><strong>Uptime:</strong> $(Show-NA $hw.UptimeHours ' hours')</div>"
+    $metricsHtml = ""
     
-    # Memory bar
+    # Uptime
+    $uptimeVal = Show-NA $hw.UptimeHours
+    $metricsHtml += @"
+<div class="hw-metric">
+  <div class="hw-metric-label"><span>Uptime</span></div>
+  <div class="hw-metric-value">$uptimeVal hours</div>
+</div>
+"@
+    
+    # CPU
+    $cpuVal = Show-NA $hw.CPUUsagePct
+    $cpuPct = if ($hw.CPUUsagePct) { $hw.CPUUsagePct } else { 0 }
+    $cpuClass = if ($cpuPct -lt 70) { 'hw-bar-good' } elseif ($cpuPct -lt 85) { 'hw-bar-warning' } else { 'hw-bar-critical' }
+    $metricsHtml += @"
+<div class="hw-metric">
+  <div class="hw-metric-label"><span>CPU</span><span>$cpuVal%</span></div>
+  <div class="hw-bar-mini">
+    <div class="hw-bar-fill $cpuClass" style="width: $cpuPct%"></div>
+  </div>
+</div>
+"@
+    
+    # Memory
     $memUsedPct = if ($hw.MemUsedPct) { $hw.MemUsedPct } else { 0 }
     $memClass = if ($memUsedPct -lt 70) { 'hw-bar-good' } elseif ($memUsedPct -lt 85) { 'hw-bar-warning' } else { 'hw-bar-critical' }
-    $memHtml = @"
-<div class="hw-item">
-  <div class="hw-label">
-    <span>Memory</span>
-    <span>$(Show-NA $hw.MemUsedGB) / $(Show-NA $hw.MemTotalGB) GB</span>
-  </div>
-  <div class="hw-bar-container">
-    <div class="hw-bar $memClass" style="width: $memUsedPct%">$memUsedPct%</div>
+    $memLabel = "$(Show-NA $hw.MemUsedGB) / $(Show-NA $hw.MemTotalGB) GB"
+    $metricsHtml += @"
+<div class="hw-metric">
+  <div class="hw-metric-label"><span>Memory</span><span>$memLabel</span></div>
+  <div class="hw-bar-mini">
+    <div class="hw-bar-fill $memClass" style="width: $memUsedPct%"></div>
   </div>
 </div>
 "@
 
-    # Disk bars
-    $disksHtml = ""
+    # Disks (compact)
     if ($hw.Disks -and $hw.Disks.Count -gt 0) {
-      $disksHtml = '<div class="disk-list">'
       foreach ($disk in $hw.Disks) {
         $diskClass = if ($disk.UsedPct -lt 70) { 'hw-bar-good' } elseif ($disk.UsedPct -lt 85) { 'hw-bar-warning' } else { 'hw-bar-critical' }
-        $disksHtml += @"
-<div class="hw-item">
-  <div class="hw-label">
-    <span>Disk $($disk.Drive)</span>
-    <span>$($disk.UsedGB) / $($disk.SizeGB) GB</span>
-  </div>
-  <div class="hw-bar-container">
-    <div class="hw-bar $diskClass" style="width: $($disk.UsedPct)%">$($disk.UsedPct)%</div>
+        $diskLabel = "$($disk.UsedGB) / $($disk.SizeGB) GB"
+        $metricsHtml += @"
+<div class="hw-metric">
+  <div class="hw-metric-label"><span>Disk $($disk.Drive)</span><span>$diskLabel</span></div>
+  <div class="hw-bar-mini">
+    <div class="hw-bar-fill $diskClass" style="width: $($disk.UsedPct)%"></div>
   </div>
 </div>
 "@
       }
-      $disksHtml += '</div>'
     }
 
     $hwHtml = @"
 <div class="hw-section">
-  <h3 style="margin-top:0;">Hardware & Resources</h3>
-  $uptimeHtml
-  <div class="hw-grid" style="margin-top: 16px;">
-    $memHtml
+  <h3 style="margin-top:0; margin-bottom: 12px;">Hardware & Resources</h3>
+  <div class="hw-compact">
+    $metricsHtml
   </div>
-  $disksHtml
 </div>
 "@
   }
@@ -499,7 +558,7 @@ $dcCards = $results | ForEach-Object {
 "@
 } | Out-String
 
-# Details sections (collapsed by default, shown when clicking status items)
+# Details sections
 $detailsScript = "<script>"
 $detailBlobs | ForEach-Object {
   $dcName = $_.DC
@@ -538,22 +597,27 @@ function closeDetail() {
 </script>
 "@
 
-# Parse replication summary
+# ENHANCED Replication Summary Table
 $replTableHtml = ""
 if ($replSummary) {
-  # Parse repadmin /replsummary output to extract meaningful data
   $replLines = $replSummary -split "`n"
   $replData = @()
   
+  # Parse repadmin output more robustly
+  $inDataSection = $false
   foreach ($line in $replLines) {
-    # Look for lines with DC names and replication data
-    if ($line -match '^\s*(\S+)\s+(\d+)\s+/\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)') {
+    if ($line -match '^\s*Source DSA\s+') { $inDataSection = $true; continue }
+    if (-not $inDataSection) { continue }
+    if ($line -match '^\s*$') { continue }
+    
+    # Match DC replication data
+    if ($line -match '^\s*(\S+)\s+(\d+)\s*/\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)') {
       $replData += [pscustomobject]@{
         DC = $matches[1]
-        Largest = $matches[2]
-        Total = $matches[3]
-        Fails = $matches[4]
-        TotalFails = $matches[5]
+        LargestDelta = [int]$matches[2]
+        Total = [int]$matches[3]
+        Fails = [int]$matches[4]
+        TotalFails = [int]$matches[5]
         LastSuccess = $matches[6]
         LastFailure = $matches[7]
       }
@@ -562,40 +626,59 @@ if ($replSummary) {
   
   if ($replData.Count -gt 0) {
     $replRows = $replData | ForEach-Object {
-      $failClass = if ([int]$_.TotalFails -gt 0) { 'style="color: #fca5a5;"' } else { '' }
+      # Status badge based on failures
+      $statusBadge = if ([int]$_.TotalFails -eq 0 -and [int]$_.Fails -eq 0) {
+        '<span class="repl-badge repl-badge-success">✓ OK</span>'
+      } elseif ([int]$_.TotalFails -gt 0) {
+        '<span class="repl-badge repl-badge-error">✗ ERROR</span>'
+      } else {
+        '<span class="repl-badge repl-badge-warning">⚠ WARNING</span>'
+      }
+      
+      # Color coding for delta
+      $deltaClass = if ([int]$_.LargestDelta -lt 60) { 'repl-status-good' }
+                    elseif ([int]$_.LargestDelta -lt 180) { 'repl-status-warn' }
+                    else { 'repl-status-error' }
+      
+      $failsClass = if ([int]$_.TotalFails -gt 0) { 'repl-status-error' } else { 'repl-status-good' }
+      
       @"
 <tr>
   <td>$($_.DC)</td>
-  <td>$($_.Largest)</td>
+  <td class="$deltaClass">$($_.LargestDelta) min</td>
   <td>$($_.Total)</td>
   <td>$($_.Fails)</td>
-  <td $failClass>$($_.TotalFails)</td>
+  <td class="$failsClass">$($_.TotalFails)</td>
   <td>$($_.LastSuccess)</td>
   <td>$($_.LastFailure)</td>
+  <td>$statusBadge</td>
 </tr>
 "@
     } | Out-String
     
     $replTableHtml = @"
-<table class="repl-table">
-  <thead>
-    <tr>
-      <th>Domain Controller</th>
-      <th>Largest Delta</th>
-      <th>Total</th>
-      <th>Fails</th>
-      <th>Total Fails</th>
-      <th>Last Success</th>
-      <th>Last Failure</th>
-    </tr>
-  </thead>
-  <tbody>
-    $replRows
-  </tbody>
-</table>
+<div class="repl-table-wrapper">
+  <table class="repl-table">
+    <thead>
+      <tr>
+        <th>Domain Controller</th>
+        <th>Largest Delta</th>
+        <th>Total Links</th>
+        <th>Current Fails</th>
+        <th>Total Fails</th>
+        <th>Last Success</th>
+        <th>Last Failure</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      $replRows
+    </tbody>
+  </table>
+</div>
 "@
   } else {
-    $replTableHtml = "<pre>$([System.Web.HttpUtility]::HtmlEncode($replSummary))</pre>"
+    $replTableHtml = "<div class='muted' style='margin-top: 16px;'>No replication data available or unable to parse output.</div><pre>$([System.Web.HttpUtility]::HtmlEncode($replSummary))</pre>"
   }
 }
 
@@ -659,6 +742,7 @@ $css
 
     <div class="card">
       <h2>Replication Summary</h2>
+      <div class="muted" style="margin-bottom: 8px;">Active Directory replication status across all domain controllers</div>
       $replTableHtml
     </div>
 
@@ -668,7 +752,7 @@ $css
     </div>
 
     <div class="footer">
-      Report generated by Invoke-ADHealthReport.ps1
+      Report generated by Invoke-ADHealthReport-Improved.ps1 | CPU measurements taken over 10-second intervals
     </div>
   </div>
   
