@@ -98,6 +98,11 @@ function Invoke-RepAdmin {
   Invoke-External -FileName 'repadmin.exe' -Arguments $args
 }
 
+function Get-ReplSummary {
+  $res = Invoke-External -FileName 'repadmin.exe' -Arguments @('/replsummary')
+  return $res.Output
+}
+
 function Try-GetWmi {
   param([string]$Class,[string]$ComputerName,[string]$Filter)
   try {
@@ -113,26 +118,47 @@ function Get-HardwareInfo {
   param([string]$Server)
 
   $os = Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $Server -ErrorAction SilentlyContinue
-  $disk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='C:'" -ComputerName $Server -ErrorAction SilentlyContinue
+  $disks = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DriveType=3" -ComputerName $Server -ErrorAction SilentlyContinue
 
-  if (-not $os)   { $os   = Try-GetWmi -Class Win32_OperatingSystem -ComputerName $Server }
-  if (-not $disk) { $disk = Try-GetWmi -Class Win32_LogicalDisk -ComputerName $Server -Filter "DeviceID='C:'" }
+  if (-not $os) { $os = Try-GetWmi -Class Win32_OperatingSystem -ComputerName $Server }
+  if (-not $disks) { 
+    $disks = @()
+    $drives = @('C:', 'D:', 'E:')
+    foreach ($d in $drives) {
+      $disk = Try-GetWmi -Class Win32_LogicalDisk -ComputerName $Server -Filter "DeviceID='$d'"
+      if ($disk) { $disks += $disk }
+    }
+  }
 
   $memTotalGB = if ($os) { [Math]::Round($os.TotalVisibleMemorySize/1MB,1) } else { $null }
   $memFreeGB  = if ($os) { [Math]::Round($os.FreePhysicalMemory/1MB,1) } else { $null }
+  $memUsedGB  = if ($memTotalGB -and $memFreeGB) { [Math]::Round($memTotalGB - $memFreeGB, 1) } else { $null }
+  $memUsedPct = if ($memTotalGB -gt 0) { [Math]::Round(($memUsedGB/$memTotalGB)*100,1) } else { $null }
   $uptime     = if ($os) { [Math]::Round((New-TimeSpan -Start $os.LastBootUpTime -End (Get-Date)).TotalHours,1) } else { $null }
 
-  $freeGB = if ($disk) { [Math]::Round($disk.FreeSpace/1GB,1) } else { $null }
-  $sizeGB = if ($disk) { [Math]::Round($disk.Size/1GB,1) } else { $null }
-  $freePct = if ($sizeGB -gt 0) { [Math]::Round(($freeGB/$sizeGB)*100,1) } else { $null }
+  $diskInfo = @()
+  foreach ($disk in $disks) {
+    $freeGB = [Math]::Round($disk.FreeSpace/1GB,1)
+    $sizeGB = [Math]::Round($disk.Size/1GB,1)
+    $usedGB = [Math]::Round($sizeGB - $freeGB, 1)
+    $usedPct = if ($sizeGB -gt 0) { [Math]::Round(($usedGB/$sizeGB)*100,1) } else { 0 }
+    
+    $diskInfo += [pscustomobject]@{
+      Drive = $disk.DeviceID
+      SizeGB = $sizeGB
+      UsedGB = $usedGB
+      FreeGB = $freeGB
+      UsedPct = $usedPct
+    }
+  }
 
   [pscustomobject]@{
-    UptimeHours   = $uptime
-    MemFreeGB     = $memFreeGB
-    MemTotalGB    = $memTotalGB
-    DiskC_FreeGB  = $freeGB
-    DiskC_SizeGB  = $sizeGB
-    DiskC_FreePct = $freePct
+    UptimeHours = $uptime
+    MemTotalGB  = $memTotalGB
+    MemUsedGB   = $memUsedGB
+    MemFreeGB   = $memFreeGB
+    MemUsedPct  = $memUsedPct
+    Disks       = $diskInfo
   }
 }
 
@@ -201,8 +227,6 @@ foreach ($dc in $allDCs) {
   $pingOk = Test-Connection -ComputerName $dc -Count 1 -Quiet -ErrorAction SilentlyContinue
   $svc    = Test-Services -Server $dc
 
-  $diag = Invoke-DcDiag -Server $dc
-
   $testResults = @{}
   $testOutputs = @{}
   foreach ($t in $dcdiagTests) {
@@ -217,8 +241,7 @@ foreach ($dc in $allDCs) {
   $repFail = ($rep.Output -match '(?i)\b(fail|failed|error|erro)\b')
   $repStatus = if ($repFail) { 'FAIL' } else { 'OK' }
 
-  $hw = $null
-  if ($IncludeHardware) { $hw = Get-HardwareInfo -Server $dc }
+  $hw = Get-HardwareInfo -Server $dc
 
   $obj = [pscustomobject]@{
     DC                   = $dc
@@ -226,7 +249,6 @@ foreach ($dc in $allDCs) {
     DNS_Service          = New-Status $svc.DNS
     NTDS_Service         = New-Status $svc.NTDS
     NetLogon_Service     = New-Status $svc.Netlogon
-
     Connectivity         = $testResults['Connectivity']
     Advertising          = $testResults['Advertising']
     NetLogons            = $testResults['NetLogons']
@@ -235,22 +257,20 @@ foreach ($dc in $allDCs) {
     Topology             = $testResults['Topology']
     SysVol               = $testResults['SysVolCheck']
     FSMO                 = $fsmStatus
-
     Replication_RepAdmin = $repStatus
-
-    UptimeHours          = if ($hw) { $hw.UptimeHours } else { $null }
-    DiskC_FreePct        = if ($hw) { $hw.DiskC_FreePct } else { $null }
-    MemFreeGB            = if ($hw) { $hw.MemFreeGB } else { $null }
+    Hardware             = $hw
   }
   $results += $obj
 
   $detailBlobs += [pscustomobject]@{
-    DC = $dc
-    DcDiagText    = $diag.Output
+    DC            = $dc
+    TestOutputs   = $testOutputs
     RepAdminText  = $rep.Output
-    PerTestOutput = $testOutputs
   }
 }
+
+# ===================== Replication Summary =====================
+$replSummary = Get-ReplSummary
 
 # ===================== Forest/Domain & FSMO holders =====================
 $forest = Get-ADForest
@@ -303,10 +323,22 @@ $css = @"
   .dc-card:hover { border-color: #3b82f6; box-shadow: 0 4px 16px rgba(59, 130, 246, 0.1); }
   .dc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #1f2937; }
   .dc-name { font-size: 18px; font-weight: 600; color: #f9fafb; }
-  .dc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
-  .dc-item { background: #151f30; padding: 12px; border-radius: 6px; border-left: 3px solid #374151; }
+  .dc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .dc-item { background: #151f30; padding: 12px; border-radius: 6px; border-left: 3px solid #374151; cursor: pointer; transition: all 0.2s; }
+  .dc-item:hover { background: #1a2332; border-left-color: #3b82f6; transform: translateX(2px); }
   .dc-item-label { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
   .dc-item-value { display: flex; align-items: center; gap: 8px; }
+  
+  .hw-section { background: #0d1829; border: 1px solid #1f2937; border-radius: 8px; padding: 16px; margin-top: 16px; }
+  .hw-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; }
+  .hw-item { }
+  .hw-label { font-size: 12px; color: #9ca3af; margin-bottom: 8px; display: flex; justify-content: space-between; }
+  .hw-bar-container { background: #1e293b; border-radius: 8px; height: 24px; overflow: hidden; position: relative; }
+  .hw-bar { height: 100%; border-radius: 8px; transition: width 0.3s ease; display: flex; align-items: center; padding: 0 8px; font-size: 11px; font-weight: 600; }
+  .hw-bar-good { background: linear-gradient(90deg, #10b981 0%, #059669 100%); }
+  .hw-bar-warning { background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%); }
+  .hw-bar-critical { background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%); }
+  .disk-list { display: flex; flex-direction: column; gap: 12px; }
   
   .badge { display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
   .ok { background: rgba(6, 78, 59, 0.3); color: #6ee7b7; border: 1px solid #10b981; }
@@ -317,12 +349,18 @@ $css = @"
   .icon-ok { background: #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.5); }
   .icon-fail { background: #ef4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.5); }
   
+  .repl-table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+  .repl-table th, .repl-table td { padding: 12px; text-align: left; border-bottom: 1px solid #1f2937; }
+  .repl-table th { background: #0b1220; color: #cbd5e1; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .repl-table td { color: #e2e8f0; }
+  .repl-table tr:hover { background: #0d1829; }
+  
   details { background: #0b1220; border: 1px solid #1f2937; border-radius: 8px; padding: 16px; margin-bottom: 12px; transition: all 0.2s; }
   details:hover { border-color: #374151; }
   details[open] { background: #0d1829; }
   summary { cursor: pointer; font-weight: 600; color: #e5e7eb; user-select: none; padding: 4px 0; }
   summary:hover { color: #60a5fa; }
-  pre { white-space: pre-wrap; color: #cbd5e1; background: #030712; padding: 16px; border-radius: 6px; font-size: 12px; line-height: 1.6; overflow-x: auto; border: 1px solid #1f2937; }
+  pre { white-space: pre-wrap; color: #cbd5e1; background: #030712; padding: 16px; border-radius: 6px; font-size: 12px; line-height: 1.6; overflow-x: auto; border: 1px solid #1f2937; max-height: 400px; overflow-y: auto; }
   
   ul { list-style: none; padding: 0; }
   ul li { padding: 8px 0; color: #cbd5e1; border-bottom: 1px solid #1f2937; }
@@ -335,9 +373,18 @@ $css = @"
   
   .status-summary { display: flex; gap: 8px; flex-wrap: wrap; }
   
+  .detail-section { display: none; margin-top: 16px; padding: 16px; background: #030712; border-radius: 8px; border: 1px solid #1f2937; }
+  .detail-section.active { display: block; animation: fadeIn 0.3s ease; }
+  
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  
   @media (max-width: 768px) {
     .dc-grid { grid-template-columns: 1fr; }
     .grid { grid-template-columns: 1fr; }
+    .hw-grid { grid-template-columns: 1fr; }
   }
 </style>
 "@
@@ -353,198 +400,142 @@ function Badge($val){
 }
 
 $dcCards = $results | ForEach-Object {
+  $dcName = $_.DC
+  $dcSafe = $dcName -replace '[^a-zA-Z0-9]', '_'
+  
   $statusItems = @(
-    @{Label='Ping'; Value=$_.Ping},
-    @{Label='DNS Service'; Value=$_.DNS_Service},
-    @{Label='NTDS Service'; Value=$_.NTDS_Service},
-    @{Label='NetLogon'; Value=$_.NetLogon_Service},
-    @{Label='Connectivity'; Value=$_.Connectivity},
-    @{Label='Advertising'; Value=$_.Advertising},
-    @{Label='NetLogons'; Value=$_.NetLogons},
-    @{Label='Services'; Value=$_.ServicesTest},
-    @{Label='Replications'; Value=$_.ReplicationsTest},
-    @{Label='RepAdmin'; Value=$_.Replication_RepAdmin},
-    @{Label='FSMO'; Value=$_.FSMO},
-    @{Label='SysVol'; Value=$_.SysVol},
-    @{Label='Topology'; Value=$_.Topology}
+    @{Label='Ping'; Value=$_.Ping; Key='Ping'},
+    @{Label='DNS Service'; Value=$_.DNS_Service; Key='DNS_Service'},
+    @{Label='NTDS Service'; Value=$_.NTDS_Service; Key='NTDS_Service'},
+    @{Label='NetLogon'; Value=$_.NetLogon_Service; Key='NetLogon_Service'},
+    @{Label='Connectivity'; Value=$_.Connectivity; Key='Connectivity'},
+    @{Label='Advertising'; Value=$_.Advertising; Key='Advertising'},
+    @{Label='NetLogons'; Value=$_.NetLogons; Key='NetLogons'},
+    @{Label='Services'; Value=$_.ServicesTest; Key='Services'},
+    @{Label='Replications'; Value=$_.ReplicationsTest; Key='Replications'},
+    @{Label='RepAdmin'; Value=$_.Replication_RepAdmin; Key='RepAdmin'},
+    @{Label='FSMO'; Value=$_.FSMO; Key='FSMO'},
+    @{Label='SysVol'; Value=$_.SysVol; Key='SysVolCheck'},
+    @{Label='Topology'; Value=$_.Topology; Key='Topology'}
   )
   
-  if ($IncludeHardware) {
-    $statusItems += @(
-      @{Label='Uptime (h)'; Value=$(Show-NA $_.UptimeHours)},
-      @{Label='Disk C: Free'; Value=$(Show-NA $_.DiskC_FreePct '%')},
-      @{Label='Mem Free'; Value=$(Show-NA $_.MemFreeGB ' GB')}
-    )
-  }
-  
   $itemsHtml = $statusItems | ForEach-Object {
-    $badgeHtml = if ($_.Value -match '^[0-9.]+' -or $_.Value -eq 'N/A') { $_.Value } else { Badge $_.Value }
+    $badgeHtml = Badge $_.Value
+    $itemKey = $_.Key
     @"
-    <div class="dc-item">
+    <div class="dc-item" onclick="toggleDetail('${dcSafe}_$itemKey')">
       <div class="dc-item-label">$($_.Label)</div>
       <div class="dc-item-value">$badgeHtml</div>
     </div>
 "@
   } | Out-String
 
+  # Hardware info
+  $hw = $_.Hardware
+  $hwHtml = ""
+  
+  if ($hw) {
+    # Uptime
+    $uptimeHtml = "<div><strong>Uptime:</strong> $(Show-NA $hw.UptimeHours ' hours')</div>"
+    
+    # Memory bar
+    $memUsedPct = if ($hw.MemUsedPct) { $hw.MemUsedPct } else { 0 }
+    $memClass = if ($memUsedPct -lt 70) { 'hw-bar-good' } elseif ($memUsedPct -lt 85) { 'hw-bar-warning' } else { 'hw-bar-critical' }
+    $memHtml = @"
+<div class="hw-item">
+  <div class="hw-label">
+    <span>Memory</span>
+    <span>$(Show-NA $hw.MemUsedGB) / $(Show-NA $hw.MemTotalGB) GB</span>
+  </div>
+  <div class="hw-bar-container">
+    <div class="hw-bar $memClass" style="width: $memUsedPct%">$memUsedPct%</div>
+  </div>
+</div>
+"@
+
+    # Disk bars
+    $disksHtml = ""
+    if ($hw.Disks -and $hw.Disks.Count -gt 0) {
+      $disksHtml = '<div class="disk-list">'
+      foreach ($disk in $hw.Disks) {
+        $diskClass = if ($disk.UsedPct -lt 70) { 'hw-bar-good' } elseif ($disk.UsedPct -lt 85) { 'hw-bar-warning' } else { 'hw-bar-critical' }
+        $disksHtml += @"
+<div class="hw-item">
+  <div class="hw-label">
+    <span>Disk $($disk.Drive)</span>
+    <span>$($disk.UsedGB) / $($disk.SizeGB) GB</span>
+  </div>
+  <div class="hw-bar-container">
+    <div class="hw-bar $diskClass" style="width: $($disk.UsedPct)%">$($disk.UsedPct)%</div>
+  </div>
+</div>
+"@
+      }
+      $disksHtml += '</div>'
+    }
+
+    $hwHtml = @"
+<div class="hw-section">
+  <h3 style="margin-top:0;">Hardware & Resources</h3>
+  $uptimeHtml
+  <div class="hw-grid" style="margin-top: 16px;">
+    $memHtml
+  </div>
+  $disksHtml
+</div>
+"@
+  }
+
   @"
 <div class="dc-card">
   <div class="dc-header">
-    <div class="dc-name">$($_.DC)</div>
+    <div class="dc-name">$dcName</div>
   </div>
   <div class="dc-grid">
     $itemsHtml
   </div>
+  $hwHtml
 </div>
 "@
 } | Out-String
 
-$detailsHtml = $detailBlobs | ForEach-Object {
-  $perTests = ($_.PerTestOutput).GetEnumerator() | ForEach-Object {
-@"
-  <details>
-    <summary><strong>DCDIAG Test:</strong> $($_.Key)</summary>
-    <pre>$([System.Web.HttpUtility]::HtmlEncode($_.Value))</pre>
-  </details>
+# Details sections (collapsed by default, shown when clicking status items)
+$detailsScript = "<script>"
+$detailBlobs | ForEach-Object {
+  $dcName = $_.DC
+  $dcSafe = $dcName -replace '[^a-zA-Z0-9]', '_'
+  
+  foreach ($test in $_.TestOutputs.GetEnumerator()) {
+    $testKey = $test.Key
+    $testOutput = [System.Web.HttpUtility]::HtmlEncode($test.Value)
+    
+    $detailsScript += @"
+
+var detail_${dcSafe}_${testKey} = ``$testOutput``;
 "@
-} | Out-String
-
-@"
-<details>
-  <summary>Diagnostics Details — <strong>$($_.DC)</strong></summary>
-  <h3>Overall DCDIAG (/c /v)</h3>
-  <pre>$([System.Web.HttpUtility]::HtmlEncode($_.DcDiagText))</pre>
-  <h3>REPADMIN</h3>
-  <pre>$([System.Web.HttpUtility]::HtmlEncode($_.RepAdminText))</pre>
-  <h3>Per-Test Outputs</h3>
-  $perTests
-</details>
-"@
-} | Out-String
-
-$fsmoHtml = @"
-<ul>
-  <li><b>Schema Master:</b> $($fsmo.SchemaMaster)</li>
-  <li><b>Domain Naming Master:</b> $($fsmo.DomainNamingMaster)</li>
-  <li><b>PDC Emulator:</b> $($fsmo.PDCEmulator)</li>
-  <li><b>RID Master:</b> $($fsmo.RIDMaster)</li>
-  <li><b>Infrastructure Master:</b> $($fsmo.InfrastructureMaster)</li>
-</ul>
-"@
-
-$html = @"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Active Directory Health Report</title>
-$css
-</head>
-<body>
-  <div class="container">
-    <div class="card">
-      <h1>Active Directory — Health Report</h1>
-      <div class="muted">Generated: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss") — Domain: $($domain.DNSRoot)</div>
-      <div class="grid">
-        <div class="tile">
-          <div class="k">Domain Controllers</div>
-          <div class="v">$total</div>
-        </div>
-        <div class="tile">
-          <div class="k">Total Failures</div>
-          <div class="v" style="color: $(if($failCount -gt 0){'#ef4444'}else{'#10b981'})">$failCount</div>
-        </div>
-        <div class="tile">
-          <div class="k">Forest</div>
-          <div class="v" style="font-size: 20px;">$($forest.Name)</div>
-        </div>
-        <div class="tile">
-          <div class="k">Domain</div>
-          <div class="v" style="font-size: 20px;">$($domain.DNSRoot)</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>Domain Controllers Status</h2>
-      $dcCards
-    </div>
-
-    <div class="card">
-      <h2>FSMO Role Holders</h2>
-      $fsmoHtml
-    </div>
-
-    <div class="card">
-      <h2>Detailed Diagnostics</h2>
-      $detailsHtml
-    </div>
-
-    <div class="footer">
-      Report generated by Invoke-ADHealthReport.ps1
-    </div>
-  </div>
-</body>
-</html>
-"@
-
-# ===================== Save HTML =====================
-$fullPath = (Resolve-Path (New-Item -Path $OutputPath -ItemType File -Force)).Path
-[IO.File]::WriteAllText($fullPath, $html, [Text.UTF8Encoding]::new($false))
-
-# ===================== Email sending =====================
-function Send-ReportViaSmtp {
-  param([string]$Server,[int]$Port,[switch]$UseSsl,[string]$From,[string[]]$To,[string]$Subject,[pscredential]$Cred,[string]$BodyHtml,[string]$Attachment)
-  if (-not $Server) { throw "SmtpServer was not provided." }
-  if (-not $From -or -not $To) { throw "From/To were not provided." }
-  Send-MailMessage -SmtpServer $Server -Port $Port -UseSsl:$UseSsl `
-    -From $From -To $To -Subject $Subject -Body $BodyHtml -BodyAsHtml `
-    -Credential $Cred -Attachments $Attachment -ErrorAction Stop
-}
-
-function Send-ReportViaGraph {
-  param([string]$SenderUpn,[string[]]$To,[string]$Subject,[string]$BodyHtml,[string]$Attachment)
-  if (-not (Get-Module -ListAvailable Microsoft.Graph)) { throw "Microsoft.Graph module not found. Install with: Install-Module Microsoft.Graph" }
-  if (-not $SenderUpn) { throw "GraphSenderUpn was not provided." }
-  Import-Module Microsoft.Graph -ErrorAction Stop
-  if (-not (Get-MgContext)) { Connect-MgGraph -Scopes "Mail.Send" | Out-Null }
-
-  $bytes = [System.IO.File]::ReadAllBytes($Attachment)
-  $b64 = [System.Convert]::ToBase64String($bytes)
-  $message = @{
-    message = @{
-      subject = $Subject
-      body = @{ contentType = "HTML"; content = $BodyHtml }
-      toRecipients = @($To | ForEach-Object { @{ emailAddress = @{ address = $_ } } })
-      attachments = @(@{
-          "@odata.type" = "#microsoft.graph.fileAttachment"
-          name = [IO.Path]::GetFileName($Attachment)
-          contentBytes = $b64
-          contentType = "text/html"
-      })
-    }
-    saveToSentItems = $true
-  }
-  Send-MgUserMail -UserId $SenderUpn -BodyParameter $message
-}
-
-$shouldSend = $true
-if ($EmailOnErrorOnly -and $failCount -eq 0) { $shouldSend = $false }
-
-if ($shouldSend -and ($To -and $To.Count -gt 0)) {
-  if ($UseGraph) {
-    Send-ReportViaGraph -SenderUpn $GraphSenderUpn -To $To -Subject $Subject -BodyHtml $html -Attachment $fullPath
-  } elseif ($SmtpServer) {
-    Send-ReportViaSmtp -Server $SmtpServer -Port $SmtpPort -UseSsl:$SmtpUseSsl -From $From -To $To -Subject $Subject -Cred $Credential -BodyHtml $html -Attachment $fullPath
   }
 }
 
-# ===================== Final output =====================
-Write-Host "Report saved at: $fullPath" -ForegroundColor Green
-if ($Csv -and (Test-Path $csvPath)) { Write-Host "CSV saved at: $csvPath" -ForegroundColor Green }
-if ($shouldSend -and ($To -and $To.Count -gt 0)) {
-  Write-Host "Email sent successfully." -ForegroundColor Green
-} elseif (-not $shouldSend -and $EmailOnErrorOnly) {
-  Write-Host "No failures detected — email suppressed (EmailOnErrorOnly)." -ForegroundColor Yellow
+$detailsScript += @"
+
+function toggleDetail(key) {
+  var container = document.getElementById('detail-container');
+  var content = document.getElementById('detail-content');
+  var title = document.getElementById('detail-title');
+  
+  var detailVar = 'detail_' + key;
+  if (typeof window[detailVar] !== 'undefined') {
+    title.textContent = key.replace(/_/g, ' > ');
+    content.textContent = window[detailVar];
+    container.classList.add('active');
+    container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
 }
+
+function closeDetail() {
+  document.getElementById('detail-container').classList.remove('active');
+}
+</script>
+"@
+
+# Parse replication summary
