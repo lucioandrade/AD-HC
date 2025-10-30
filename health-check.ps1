@@ -367,108 +367,111 @@ if ($Csv) {
 # ===================== HTML =====================
 $css = @"
 <style>
-  * { box-sizing: border-box; }
-  body { font-family: 'Segoe UI', Roboto, Arial, sans-serif; margin: 0; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #e2e8f0; padding: 20px; }
-  .container { max-width: 1400px; margin: 0 auto; }
-  .card { background: rgba(17, 24, 39, 0.95); border: 1px solid #1f2937; border-radius: 12px; padding: 24px; margin-bottom: 24px; box-shadow: 0 10px 40px rgba(0,0,0,.4); backdrop-filter: blur(10px); }
-  h1 { color: #f9fafb; margin: 0 0 8px 0; font-size: 32px; font-weight: 700; }
-  h2 { color: #e5e7eb; margin: 0 0 20px 0; font-size: 22px; font-weight: 600; border-bottom: 2px solid #374151; padding-bottom: 10px; }
-  h3 { color: #cbd5e1; font-size: 16px; margin: 20px 0 10px 0; }
-  .muted { color: #94a3b8; font-size: 14px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 20px; }
-  .tile { background: linear-gradient(135deg, #1e293b 0%, #0b1220 100%); border: 1px solid #334155; border-radius: 10px; padding: 20px; text-align: center; transition: transform 0.2s, box-shadow 0.2s; }
-  .tile:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.3); }
-  .tile-alert { background: linear-gradient(135deg, #7f1d1d 0%, #450a0a 100%); border: 2px solid #ef4444; box-shadow: 0 0 20px rgba(239, 68, 68, 0.3); animation: pulse 2s infinite; }
-  .tile .k { font-size: 13px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-  .tile .v { font-size: 32px; font-weight: 700; color: #fff; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background: #0a0e1a; color: #e2e8f0; padding: 16px; font-size: 13px; line-height: 1.4; }
+  .container { max-width: 1600px; margin: 0 auto; }
   
-  @keyframes pulse {
-    0%, 100% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.3); }
-    50% { box-shadow: 0 0 30px rgba(239, 68, 68, 0.6); }
-  }
+  /* COMPACT HEADER */
+  .header { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 1px solid #334155; border-radius: 8px; padding: 16px 20px; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,.3); }
+  .header-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+  .header-title { font-size: 22px; font-weight: 700; color: #f9fafb; margin: 0; }
+  .header-meta { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+  .meta-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #94a3b8; }
+  .meta-label { font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .meta-value { color: #cbd5e1; }
   
-  .dc-card { background: #0b1220; border: 1px solid #1f2937; border-radius: 10px; padding: 20px; margin-bottom: 16px; transition: all 0.2s; }
-  .dc-card:hover { border-color: #3b82f6; box-shadow: 0 4px 16px rgba(59, 130, 246, 0.1); }
-  .dc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #1f2937; }
-  .dc-name { font-size: 18px; font-weight: 600; color: #f9fafb; }
-  .dc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
-  .dc-item { background: #151f30; padding: 12px; border-radius: 6px; border-left: 3px solid #374151; cursor: pointer; transition: all 0.2s; }
-  .dc-item:hover { background: #1a2332; border-left-color: #3b82f6; transform: translateX(2px); }
-  .dc-item-static { background: #151f30; padding: 12px; border-radius: 6px; border-left: 3px solid #374151; cursor: default; transition: all 0.2s; }
-  .dc-item-static:hover { background: #151f30; border-left-color: #374151; transform: none; }
-  .dc-item-label { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-  .dc-item-value { display: flex; align-items: center; gap: 8px; }
+  /* COMPACT METRICS */
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .metric { background: rgba(30, 41, 59, 0.5); border: 1px solid #334155; border-radius: 6px; padding: 10px 14px; text-align: center; }
+  .metric-label { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600; }
+  .metric-value { font-size: 24px; font-weight: 700; color: #fff; }
+  .metric-alert { background: linear-gradient(135deg, #7f1d1d 0%, #450a0a 100%); border-color: #ef4444; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 rgba(239, 68, 68, 0.4); } 50% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.6); } }
   
-  /* COMPACT HARDWARE SECTION */
-  .hw-section { background: #0d1829; border: 1px solid #1f2937; border-radius: 8px; padding: 16px; margin-top: 16px; }
-  .hw-compact { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-  .hw-metric { flex: 1; min-width: 180px; }
-  .hw-metric-label { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; display: flex; justify-content: space-between; }
-  .hw-metric-value { font-size: 13px; font-weight: 600; color: #e5e7eb; }
-  .hw-bar-mini { background: #1e293b; border-radius: 4px; height: 8px; overflow: hidden; position: relative; margin-top: 4px; }
-  .hw-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
-  .hw-bar-good { background: linear-gradient(90deg, #10b981 0%, #059669 100%); }
-  .hw-bar-warning { background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%); }
-  .hw-bar-critical { background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%); }
+  .card { background: rgba(17, 24, 39, 0.9); border: 1px solid #1f2937; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,.2); }
+  .card-title { font-size: 16px; font-weight: 700; color: #e5e7eb; margin: 0 0 12px 0; padding-bottom: 8px; border-bottom: 1px solid #374151; }
+  .card-subtitle { font-size: 11px; color: #94a3b8; margin-bottom: 12px; }
   
-  .badge { display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-  .ok { background: rgba(6, 78, 59, 0.3); color: #6ee7b7; border: 1px solid #10b981; }
-  .fail { background: rgba(127, 29, 29, 0.3); color: #fca5a5; border: 1px solid #ef4444; }
-  .na { background: rgba(55, 65, 81, 0.3); color: #e5e7eb; border: 1px solid #6b7280; }
+  /* ULTRA COMPACT DC CARDS */
+  .dc-card { background: #0f1419; border: 1px solid #1f2937; border-radius: 6px; padding: 12px; margin-bottom: 10px; transition: all 0.15s; }
+  .dc-card:hover { border-color: #3b82f6; }
+  .dc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #1f2937; }
+  .dc-name { font-size: 15px; font-weight: 700; color: #f9fafb; }
   
-  .icon { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-  .icon-ok { background: #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.5); }
-  .icon-fail { background: #ef4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.5); }
+  /* DENSE STATUS GRID */
+  .status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 6px; margin-bottom: 10px; }
+  .status-item { background: #1a1f2e; padding: 6px 8px; border-radius: 4px; border-left: 2px solid #374151; cursor: pointer; transition: all 0.15s; }
+  .status-item:hover { background: #242938; border-left-color: #3b82f6; }
+  .status-item-static { background: #1a1f2e; padding: 6px 8px; border-radius: 4px; border-left: 2px solid #374151; cursor: default; }
+  .status-label { font-size: 9px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 3px; font-weight: 600; }
+  .status-value { display: flex; align-items: center; gap: 4px; font-size: 11px; }
   
-  /* ENHANCED REPLICATION TABLE */
-  .repl-table-wrapper { overflow-x: auto; margin-top: 16px; border-radius: 8px; border: 1px solid #1f2937; background: #0b1220; }
-  .repl-table { width: 100%; border-collapse: collapse; }
-  .repl-table thead { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); position: sticky; top: 0; z-index: 10; }
-  .repl-table th { padding: 12px 16px; text-align: left; color: #cbd5e1; font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; border-bottom: 1px solid #374151; white-space: nowrap; }
-  .repl-table thead tr:first-child th { padding: 16px; font-size: 12px; color: #e5e7eb; border-bottom: 2px solid #374151; }
-  .repl-table tbody tr { transition: all 0.2s; border-bottom: 1px solid #1f2937; }
-  .repl-table tbody tr:hover { background: rgba(59, 130, 246, 0.08); }
-  .repl-table tbody tr:last-child { border-bottom: none; }
-  .repl-table td { padding: 14px 16px; color: #e2e8f0; font-size: 13px; border-right: 1px solid #1f2937; }
-  .repl-table td:first-child { font-weight: 600; color: #f9fafb; background: rgba(30, 41, 59, 0.3); }
-  .repl-table td:last-child { border-right: none; }
-  .repl-status-good { color: #6ee7b7; font-weight: 600; }
-  .repl-status-warn { color: #fbbf24; font-weight: 600; }
-  .repl-status-error { color: #fca5a5; font-weight: 600; }
-  .repl-badge { display: inline-block; padding: 5px 12px; border-radius: 8px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
-  .repl-badge-success { background: rgba(6, 78, 59, 0.4); color: #6ee7b7; border: 1px solid #10b981; }
-  .repl-badge-warning { background: rgba(146, 64, 14, 0.4); color: #fbbf24; border: 1px solid #f59e0b; }
-  .repl-badge-error { background: rgba(127, 29, 29, 0.4); color: #fca5a5; border: 1px solid #ef4444; }
+  /* MINI BADGES */
+  .badge { display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; }
+  .ok { background: rgba(6, 78, 59, 0.4); color: #6ee7b7; border: 1px solid #059669; }
+  .fail { background: rgba(127, 29, 29, 0.4); color: #fca5a5; border: 1px solid #dc2626; }
+  .na { background: rgba(55, 65, 81, 0.3); color: #9ca3af; border: 1px solid #4b5563; }
+  .icon { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .icon-ok { background: #10b981; }
+  .icon-fail { background: #ef4444; }
   
-  details { background: #0b1220; border: 1px solid #1f2937; border-radius: 8px; padding: 16px; margin-bottom: 12px; transition: all 0.2s; }
-  details:hover { border-color: #374151; }
-  details[open] { background: #0d1829; }
-  summary { cursor: pointer; font-weight: 600; color: #e5e7eb; user-select: none; padding: 4px 0; }
-  summary:hover { color: #60a5fa; }
-  pre { white-space: pre-wrap; color: #cbd5e1; background: #030712; padding: 16px; border-radius: 6px; font-size: 12px; line-height: 1.6; overflow-x: auto; border: 1px solid #1f2937; max-height: 400px; overflow-y: auto; }
+  /* SUPER COMPACT HARDWARE */
+  .hw { background: #0d1117; border: 1px solid #1f2937; border-radius: 6px; padding: 10px; margin-top: 10px; }
+  .hw-title { font-size: 11px; font-weight: 700; color: #cbd5e1; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .hw-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  .hw-item { }
+  .hw-label { font-size: 9px; color: #9ca3af; margin-bottom: 3px; display: flex; justify-content: space-between; font-weight: 600; }
+  .hw-bar { background: #1e293b; border-radius: 3px; height: 6px; overflow: hidden; position: relative; }
+  .hw-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+  .hw-good { background: linear-gradient(90deg, #10b981, #059669); }
+  .hw-warn { background: linear-gradient(90deg, #f59e0b, #d97706); }
+  .hw-crit { background: linear-gradient(90deg, #ef4444, #dc2626); }
   
-  ul { list-style: none; padding: 0; }
-  ul li { padding: 8px 0; color: #cbd5e1; border-bottom: 1px solid #1f2937; }
-  ul li:last-child { border-bottom: none; }
-  ul li b { color: #e5e7eb; font-weight: 600; min-width: 180px; display: inline-block; }
+  /* COMPACT REPLICATION TABLE */
+  .table-wrap { overflow-x: auto; margin-top: 12px; border-radius: 6px; border: 1px solid #1f2937; }
+  .table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .table thead { background: linear-gradient(135deg, #1e293b, #0f172a); }
+  .table th { padding: 8px 10px; text-align: left; color: #cbd5e1; font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; border-bottom: 1px solid #374151; white-space: nowrap; }
+  .table thead tr:first-child th { padding: 10px; font-size: 10px; border-bottom: 2px solid #374151; }
+  .table tbody tr { transition: background 0.15s; border-bottom: 1px solid #1f2937; }
+  .table tbody tr:hover { background: rgba(59, 130, 246, 0.06); }
+  .table td { padding: 8px 10px; color: #e2e8f0; border-right: 1px solid #1f2937; }
+  .table td:first-child { font-weight: 600; color: #f9fafb; background: rgba(30, 41, 59, 0.3); }
+  .table td:last-child { border-right: none; }
+  .status-good { color: #6ee7b7; font-weight: 600; }
+  .status-warn { color: #fbbf24; font-weight: 600; }
+  .status-error { color: #fca5a5; font-weight: 600; }
+  .badge-sm { padding: 3px 8px; font-size: 8px; border-radius: 4px; font-weight: 700; text-transform: uppercase; white-space: nowrap; display: inline-block; }
+  .badge-success { background: rgba(6, 78, 59, 0.5); color: #6ee7b7; border: 1px solid #10b981; }
+  .badge-warning { background: rgba(146, 64, 14, 0.5); color: #fbbf24; border: 1px solid #f59e0b; }
+  .badge-error { background: rgba(127, 29, 29, 0.5); color: #fca5a5; border: 1px solid #ef4444; }
   
-  .footer { font-size: 12px; color: #64748b; margin-top: 32px; text-align: center; padding: 20px; border-top: 1px solid #1f2937; }
-  a { color: #60a5fa; text-decoration: none; transition: color 0.2s; }
-  a:hover { color: #93c5fd; }
+  /* COMPACT FSMO TABLE */
+  .fsmo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; }
+  .fsmo-item { background: #0f1419; border: 1px solid #1f2937; border-radius: 6px; padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; transition: all 0.15s; }
+  .fsmo-item:hover { background: #1a1f2e; border-color: #374151; }
+  .fsmo-role { font-size: 11px; color: #9ca3af; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
+  .fsmo-holder { font-size: 13px; color: #e5e7eb; font-weight: 700; }
+  .fsmo-icon { width: 24px; height: 24px; background: linear-gradient(135deg, #3b82f6, #1d4ed8); border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #fff; margin-right: 10px; }
   
-  .detail-section { display: none; margin-top: 16px; padding: 16px; background: #030712; border-radius: 8px; border: 1px solid #1f2937; }
-  .detail-section.active { display: block; animation: fadeIn 0.3s ease; }
+  /* DETAIL SECTION */
+  .detail { display: none; margin-top: 12px; padding: 12px; background: #030712; border-radius: 6px; border: 1px solid #1f2937; }
+  .detail.active { display: block; animation: fadeIn 0.2s; }
+  .detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .detail-title { font-size: 12px; font-weight: 600; color: #e5e7eb; margin: 0; }
+  .detail-close { background: #374151; border: none; color: #e5e7eb; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 10px; font-weight: 600; }
+  .detail-close:hover { background: #4b5563; }
+  pre { white-space: pre-wrap; color: #cbd5e1; background: #0a0e14; padding: 10px; border-radius: 4px; font-size: 10px; line-height: 1.4; overflow-x: auto; border: 1px solid #1f2937; max-height: 300px; overflow-y: auto; margin: 0; }
   
-  @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(-10px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  
+  .footer { font-size: 10px; color: #64748b; margin-top: 20px; text-align: center; padding: 12px; border-top: 1px solid #1f2937; }
   
   @media (max-width: 768px) {
-    .dc-grid { grid-template-columns: 1fr; }
-    .grid { grid-template-columns: 1fr; }
-    .hw-compact { flex-direction: column; }
-    .hw-metric { min-width: 100%; }
+    .status-grid { grid-template-columns: 1fr 1fr; }
+    .metrics { grid-template-columns: 1fr 1fr; }
+    .hw-grid { grid-template-columns: 1fr; }
+    .fsmo-grid { grid-template-columns: 1fr; }
   }
 </style>
 "@
@@ -489,14 +492,14 @@ $dcCards = $results | ForEach-Object {
   
   $statusItems = @(
     @{Label='Ping'; Value=$_.Ping; Key='Ping'; HasDetail=$false},
-    @{Label='DNS Service'; Value=$_.DNS_Service; Key='DNS_Service'; HasDetail=$false},
-    @{Label='NTDS Service'; Value=$_.NTDS_Service; Key='NTDS_Service'; HasDetail=$false},
+    @{Label='DNS Svc'; Value=$_.DNS_Service; Key='DNS_Service'; HasDetail=$false},
+    @{Label='NTDS Svc'; Value=$_.NTDS_Service; Key='NTDS_Service'; HasDetail=$false},
     @{Label='NetLogon'; Value=$_.NetLogon_Service; Key='NetLogon_Service'; HasDetail=$false},
-    @{Label='Connectivity'; Value=$_.Connectivity; Key='Connectivity'; HasDetail=$true},
-    @{Label='Advertising'; Value=$_.Advertising; Key='Advertising'; HasDetail=$true},
+    @{Label='Connect'; Value=$_.Connectivity; Key='Connectivity'; HasDetail=$true},
+    @{Label='Advertise'; Value=$_.Advertising; Key='Advertising'; HasDetail=$true},
     @{Label='NetLogons'; Value=$_.NetLogons; Key='NetLogons'; HasDetail=$true},
     @{Label='Services'; Value=$_.ServicesTest; Key='Services'; HasDetail=$true},
-    @{Label='Replications'; Value=$_.ReplicationsTest; Key='Replications'; HasDetail=$true},
+    @{Label='Replication'; Value=$_.ReplicationsTest; Key='Replications'; HasDetail=$true},
     @{Label='RepAdmin'; Value=$_.Replication_RepAdmin; Key='RepAdmin'; HasDetail=$false},
     @{Label='FSMO'; Value=$_.FSMO; Key='FSMO'; HasDetail=$false},
     @{Label='SysVol'; Value=$_.SysVol; Key='SysVolCheck'; HasDetail=$true},
@@ -506,83 +509,50 @@ $dcCards = $results | ForEach-Object {
   $itemsHtml = $statusItems | ForEach-Object {
     $badgeHtml = Badge $_.Value
     $itemKey = $_.Key
-    $itemClass = if ($_.HasDetail) { 'dc-item' } else { 'dc-item-static' }
+    $itemClass = if ($_.HasDetail) { 'status-item' } else { 'status-item-static' }
     $onclickAttr = if ($_.HasDetail) { "onclick=`"toggleDetail('${dcSafe}_$itemKey')`"" } else { '' }
     
     @"
     <div class="$itemClass" $onclickAttr>
-      <div class="dc-item-label">$($_.Label)</div>
-      <div class="dc-item-value">$badgeHtml</div>
+      <div class="status-label">$($_.Label)</div>
+      <div class="status-value">$badgeHtml</div>
     </div>
 "@
   } | Out-String
 
-  # COMPACT Hardware info with CPU
+  # ULTRA COMPACT Hardware
   $hw = $_.Hardware
   $hwHtml = ""
   
   if ($hw) {
     $metricsHtml = ""
     
-    # Uptime
+    # Uptime (text only, no bar)
     $uptimeVal = Show-NA $hw.UptimeHours
-    $metricsHtml += @"
-<div class="hw-metric">
-  <div class="hw-metric-label"><span>Uptime</span></div>
-  <div class="hw-metric-value">$uptimeVal hours</div>
-</div>
-"@
+    $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>Uptime</span><span>$uptimeVal hrs</span></div></div>"
     
     # CPU
     $cpuVal = Show-NA $hw.CPUUsagePct
     $cpuPct = if ($hw.CPUUsagePct) { $hw.CPUUsagePct } else { 0 }
-    $cpuClass = if ($cpuPct -lt 70) { 'hw-bar-good' } elseif ($cpuPct -lt 85) { 'hw-bar-warning' } else { 'hw-bar-critical' }
-    $metricsHtml += @"
-<div class="hw-metric">
-  <div class="hw-metric-label"><span>CPU</span><span>$cpuVal%</span></div>
-  <div class="hw-bar-mini">
-    <div class="hw-bar-fill $cpuClass" style="width: $cpuPct%"></div>
-  </div>
-</div>
-"@
+    $cpuClass = if ($cpuPct -lt 70) { 'hw-good' } elseif ($cpuPct -lt 85) { 'hw-warn' } else { 'hw-crit' }
+    $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>CPU</span><span>$cpuVal%</span></div><div class='hw-bar'><div class='hw-fill $cpuClass' style='width: $cpuPct%'></div></div></div>"
     
     # Memory
     $memUsedPct = if ($hw.MemUsedPct) { $hw.MemUsedPct } else { 0 }
-    $memClass = if ($memUsedPct -lt 70) { 'hw-bar-good' } elseif ($memUsedPct -lt 85) { 'hw-bar-warning' } else { 'hw-bar-critical' }
-    $memLabel = "$(Show-NA $hw.MemUsedGB) / $(Show-NA $hw.MemTotalGB) GB"
-    $metricsHtml += @"
-<div class="hw-metric">
-  <div class="hw-metric-label"><span>Memory</span><span>$memLabel</span></div>
-  <div class="hw-bar-mini">
-    <div class="hw-bar-fill $memClass" style="width: $memUsedPct%"></div>
-  </div>
-</div>
-"@
+    $memClass = if ($memUsedPct -lt 70) { 'hw-good' } elseif ($memUsedPct -lt 85) { 'hw-warn' } else { 'hw-crit' }
+    $memLabel = "$(Show-NA $hw.MemUsedGB)/$(Show-NA $hw.MemTotalGB)GB"
+    $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>RAM</span><span>$memLabel</span></div><div class='hw-bar'><div class='hw-fill $memClass' style='width: $memUsedPct%'></div></div></div>"
 
     # Disks (compact)
     if ($hw.Disks -and $hw.Disks.Count -gt 0) {
       foreach ($disk in $hw.Disks) {
-        $diskClass = if ($disk.UsedPct -lt 70) { 'hw-bar-good' } elseif ($disk.UsedPct -lt 85) { 'hw-bar-warning' } else { 'hw-bar-critical' }
-        $diskLabel = "$($disk.UsedGB) / $($disk.SizeGB) GB"
-        $metricsHtml += @"
-<div class="hw-metric">
-  <div class="hw-metric-label"><span>Disk $($disk.Drive)</span><span>$diskLabel</span></div>
-  <div class="hw-bar-mini">
-    <div class="hw-bar-fill $diskClass" style="width: $($disk.UsedPct)%"></div>
-  </div>
-</div>
-"@
+        $diskClass = if ($disk.UsedPct -lt 70) { 'hw-good' } elseif ($disk.UsedPct -lt 85) { 'hw-warn' } else { 'hw-crit' }
+        $diskLabel = "$($disk.UsedGB)/$($disk.SizeGB)GB"
+        $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>$($disk.Drive)</span><span>$diskLabel</span></div><div class='hw-bar'><div class='hw-fill $diskClass' style='width: $($disk.UsedPct)%'></div></div></div>"
       }
     }
 
-    $hwHtml = @"
-<div class="hw-section">
-  <h3 style="margin-top:0; margin-bottom: 12px;">Hardware & Resources</h3>
-  <div class="hw-compact">
-    $metricsHtml
-  </div>
-</div>
-"@
+    $hwHtml = "<div class='hw'><div class='hw-title'>Hardware & Resources</div><div class='hw-grid'>$metricsHtml</div></div>"
   }
 
   @"
@@ -590,7 +560,7 @@ $dcCards = $results | ForEach-Object {
   <div class="dc-header">
     <div class="dc-name">$dcName</div>
   </div>
-  <div class="dc-grid">
+  <div class="status-grid">
     $itemsHtml
   </div>
   $hwHtml
@@ -755,31 +725,31 @@ if ($replSummary) {
       
       # Status badge
       $statusBadge = if ($totalErrors -eq 0 -and $totalFails -eq 0) {
-        '<span class="repl-badge repl-badge-success">✓ HEALTHY</span>'
+        '<span class="badge-sm badge-success">✓ HEALTHY</span>'
       } elseif ($totalErrors -gt 0) {
-        '<span class="repl-badge repl-badge-error">✗ ERROR</span>'
+        '<span class="badge-sm badge-error">✗ ERROR</span>'
       } else {
-        '<span class="repl-badge repl-badge-warning">⚠ WARNING</span>'
+        '<span class="badge-sm badge-warning">⚠ WARN</span>'
       }
       
       # Delta color
-      $deltaClass = if ($maxDelta -lt 60) { 'repl-status-good' }
-                    elseif ($maxDelta -lt 300) { 'repl-status-warn' }
-                    else { 'repl-status-error' }
+      $deltaClass = if ($maxDelta -lt 60) { 'status-good' }
+                    elseif ($maxDelta -lt 300) { 'status-warn' }
+                    else { 'status-error' }
       
       # Error color
-      $errorClass = if ($totalErrors -gt 0) { 'repl-status-error' } 
-                    elseif ($totalFails -gt 0) { 'repl-status-warn' }
-                    else { 'repl-status-good' }
+      $errorClass = if ($totalErrors -gt 0) { 'status-error' } 
+                    elseif ($totalFails -gt 0) { 'status-warn' }
+                    else { 'status-good' }
       
       @"
 <tr>
   <td><strong>$($_.DC)</strong></td>
   <td class="$deltaClass">$($_.SourceDelta)s</td>
-  <td>$($_.SourceFails) / $($_.SourceTotal)</td>
+  <td>$($_.SourceFails)/$($_.SourceTotal)</td>
   <td class="$errorClass">$($_.SourceErrors)</td>
   <td class="$deltaClass">$($_.DestDelta)s</td>
-  <td>$($_.DestFails) / $($_.DestTotal)</td>
+  <td>$($_.DestFails)/$($_.DestTotal)</td>
   <td class="$errorClass">$($_.DestErrors)</td>
   <td style="text-align: center;">$statusBadge</td>
 </tr>
@@ -787,8 +757,8 @@ if ($replSummary) {
     } | Out-String
     
     $replTableHtml = @"
-<div class="repl-table-wrapper">
-  <table class="repl-table">
+<div class="table-wrap">
+  <table class="table">
     <thead>
       <tr>
         <th rowspan="2">Domain Controller</th>
@@ -797,10 +767,10 @@ if ($replSummary) {
         <th rowspan="2" style="text-align: center;">Status</th>
       </tr>
       <tr>
-        <th style="border-right: 1px solid #1f2937;">Largest Delta</th>
+        <th style="border-right: 1px solid #1f2937;">Delta</th>
         <th style="border-right: 1px solid #1f2937;">Fails/Total</th>
         <th style="border-right: 2px solid #374151;">Errors</th>
-        <th style="border-right: 1px solid #1f2937;">Largest Delta</th>
+        <th style="border-right: 1px solid #1f2937;">Delta</th>
         <th style="border-right: 1px solid #1f2937;">Fails/Total</th>
         <th style="border-right: 2px solid #374151;">Errors</th>
       </tr>
@@ -824,13 +794,53 @@ if ($replSummary) {
 }
 
 $fsmoHtml = @"
-<ul>
-  <li><b>Schema Master:</b> $($fsmo.SchemaMaster)</li>
-  <li><b>Domain Naming Master:</b> $($fsmo.DomainNamingMaster)</li>
-  <li><b>PDC Emulator:</b> $($fsmo.PDCEmulator)</li>
-  <li><b>RID Master:</b> $($fsmo.RIDMaster)</li>
-  <li><b>Infrastructure Master:</b> $($fsmo.InfrastructureMaster)</li>
-</ul>
+<div class="fsmo-grid">
+  <div class="fsmo-item">
+    <div style="display: flex; align-items: center;">
+      <div class="fsmo-icon">SM</div>
+      <div>
+        <div class="fsmo-role">Schema Master</div>
+        <div class="fsmo-holder">$($fsmo.SchemaMaster)</div>
+      </div>
+    </div>
+  </div>
+  <div class="fsmo-item">
+    <div style="display: flex; align-items: center;">
+      <div class="fsmo-icon">DN</div>
+      <div>
+        <div class="fsmo-role">Domain Naming</div>
+        <div class="fsmo-holder">$($fsmo.DomainNamingMaster)</div>
+      </div>
+    </div>
+  </div>
+  <div class="fsmo-item">
+    <div style="display: flex; align-items: center;">
+      <div class="fsmo-icon">PDC</div>
+      <div>
+        <div class="fsmo-role">PDC Emulator</div>
+        <div class="fsmo-holder">$($fsmo.PDCEmulator)</div>
+      </div>
+    </div>
+  </div>
+  <div class="fsmo-item">
+    <div style="display: flex; align-items: center;">
+      <div class="fsmo-icon">RID</div>
+      <div>
+        <div class="fsmo-role">RID Master</div>
+        <div class="fsmo-holder">$($fsmo.RIDMaster)</div>
+      </div>
+    </div>
+  </div>
+  <div class="fsmo-item">
+    <div style="display: flex; align-items: center;">
+      <div class="fsmo-icon">INF</div>
+      <div>
+        <div class="fsmo-role">Infrastructure</div>
+        <div class="fsmo-holder">$($fsmo.InfrastructureMaster)</div>
+      </div>
+    </div>
+  </div>
+</div>
 "@
 
 $html = @"
@@ -839,61 +849,76 @@ $html = @"
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Active Directory Health Report</title>
+<title>AD Health Report</title>
 $css
 </head>
 <body>
   <div class="container">
-    <div class="card">
-      <h1>Active Directory — Health Report</h1>
-      <div class="muted">Generated: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss") — Domain: $($domain.DNSRoot)</div>
-      <div class="grid">
-        <div class="tile">
-          <div class="k">Domain Controllers</div>
-          <div class="v">$total</div>
+    <div class="header">
+      <div class="header-top">
+        <h1 class="header-title">Active Directory Health Report</h1>
+        <div class="header-meta">
+          <div class="meta-item">
+            <span class="meta-label">Generated:</span>
+            <span class="meta-value">$(Get-Date -Format "yyyy-MM-dd HH:mm")</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">Domain:</span>
+            <span class="meta-value">$($domain.DNSRoot)</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">Forest:</span>
+            <span class="meta-value">$($forest.Name)</span>
+          </div>
         </div>
-        <div class="tile $(if($failCount -gt 0){'tile-alert'})">
-          <div class="k">Total Failures</div>
-          <div class="v" style="color: $(if($failCount -gt 0){'#fca5a5'}else{'#10b981'})">$failCount</div>
+      </div>
+      <div class="metrics">
+        <div class="metric">
+          <div class="metric-label">Domain Controllers</div>
+          <div class="metric-value">$total</div>
         </div>
-        <div class="tile">
-          <div class="k">Forest</div>
-          <div class="v" style="font-size: 20px;">$($forest.Name)</div>
+        <div class="metric $(if($failCount -gt 0){'metric-alert'})">
+          <div class="metric-label">Total Failures</div>
+          <div class="metric-value" style="color: $(if($failCount -gt 0){'#fca5a5'}else{'#6ee7b7'})">$failCount</div>
         </div>
-        <div class="tile">
-          <div class="k">Domain</div>
-          <div class="v" style="font-size: 20px;">$($domain.DNSRoot)</div>
+        <div class="metric">
+          <div class="metric-label">Forest Level</div>
+          <div class="metric-value" style="font-size: 16px;">$($forest.ForestMode)</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Domain Level</div>
+          <div class="metric-value" style="font-size: 16px;">$($domain.DomainMode)</div>
         </div>
       </div>
     </div>
 
     <div class="card">
-      <h2>Domain Controllers Status</h2>
-      <div class="muted" style="margin-bottom: 16px;">Click on any status item to view detailed diagnostics</div>
+      <h2 class="card-title">Domain Controllers Status</h2>
+      <div class="card-subtitle">Click status items with details to expand diagnostics</div>
       $dcCards
       
-      <div id="detail-container" class="detail-section">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-          <h3 style="margin: 0;" id="detail-title">Details</h3>
-          <button onclick="closeDetail()" style="background: #374151; border: none; color: #e5e7eb; padding: 6px 12px; border-radius: 6px; cursor: pointer;">Close</button>
+      <div id="detail-container" class="detail">
+        <div class="detail-header">
+          <h3 class="detail-title" id="detail-title">Details</h3>
+          <button onclick="closeDetail()" class="detail-close">✕ Close</button>
         </div>
         <pre id="detail-content"></pre>
       </div>
     </div>
 
     <div class="card">
-      <h2>Replication Summary</h2>
-      <div class="muted" style="margin-bottom: 8px;">Active Directory replication status across all domain controllers</div>
+      <h2 class="card-title">Replication Summary</h2>
+      <div class="card-subtitle">AD replication status across all domain controllers</div>
       $replTableHtml
     </div>
 
     <div class="card">
-      <h2>FSMO Role Holders</h2>
+      <h2 class="card-title">FSMO Role Holders</h2>
       $fsmoHtml
     </div>
 
     <div class="footer">
-      Report generated by Invoke-ADHealthReport-Improved.ps1 | CPU measurements taken over 10-second intervals
+      AD Health Report v2.5 | Generated by Invoke-ADHealthReport-Improved.ps1 | CPU measurements: 10s intervals
     </div>
   </div>
   
