@@ -400,22 +400,24 @@ $css = @"
   .icon-fail { background: #ef4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.5); }
   
   /* ENHANCED REPLICATION TABLE */
-  .repl-table-wrapper { overflow-x: auto; margin-top: 16px; border-radius: 8px; border: 1px solid #1f2937; }
+  .repl-table-wrapper { overflow-x: auto; margin-top: 16px; border-radius: 8px; border: 1px solid #1f2937; background: #0b1220; }
   .repl-table { width: 100%; border-collapse: collapse; }
   .repl-table thead { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); position: sticky; top: 0; z-index: 10; }
-  .repl-table th { padding: 16px 12px; text-align: left; color: #cbd5e1; font-size: 12px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; border-bottom: 2px solid #374151; white-space: nowrap; }
+  .repl-table th { padding: 12px 16px; text-align: left; color: #cbd5e1; font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; border-bottom: 1px solid #374151; white-space: nowrap; }
+  .repl-table thead tr:first-child th { padding: 16px; font-size: 12px; color: #e5e7eb; border-bottom: 2px solid #374151; }
   .repl-table tbody tr { transition: all 0.2s; border-bottom: 1px solid #1f2937; }
-  .repl-table tbody tr:hover { background: rgba(59, 130, 246, 0.05); }
+  .repl-table tbody tr:hover { background: rgba(59, 130, 246, 0.08); }
   .repl-table tbody tr:last-child { border-bottom: none; }
-  .repl-table td { padding: 14px 12px; color: #e2e8f0; font-size: 13px; }
-  .repl-table td:first-child { font-weight: 600; color: #f9fafb; }
+  .repl-table td { padding: 14px 16px; color: #e2e8f0; font-size: 13px; border-right: 1px solid #1f2937; }
+  .repl-table td:first-child { font-weight: 600; color: #f9fafb; background: rgba(30, 41, 59, 0.3); }
+  .repl-table td:last-child { border-right: none; }
   .repl-status-good { color: #6ee7b7; font-weight: 600; }
   .repl-status-warn { color: #fbbf24; font-weight: 600; }
   .repl-status-error { color: #fca5a5; font-weight: 600; }
-  .repl-badge { display: inline-block; padding: 4px 10px; border-radius: 8px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
-  .repl-badge-success { background: rgba(6, 78, 59, 0.3); color: #6ee7b7; border: 1px solid #10b981; }
-  .repl-badge-warning { background: rgba(146, 64, 14, 0.3); color: #fbbf24; border: 1px solid #f59e0b; }
-  .repl-badge-error { background: rgba(127, 29, 29, 0.3); color: #fca5a5; border: 1px solid #ef4444; }
+  .repl-badge { display: inline-block; padding: 5px 12px; border-radius: 8px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
+  .repl-badge-success { background: rgba(6, 78, 59, 0.4); color: #6ee7b7; border: 1px solid #10b981; }
+  .repl-badge-warning { background: rgba(146, 64, 14, 0.4); color: #fbbf24; border: 1px solid #f59e0b; }
+  .repl-badge-error { background: rgba(127, 29, 29, 0.4); color: #fca5a5; border: 1px solid #ef4444; }
   
   details { background: #0b1220; border: 1px solid #1f2937; border-radius: 8px; padding: 16px; margin-bottom: 12px; transition: all 0.2s; }
   details:hover { border-color: #374151; }
@@ -620,55 +622,108 @@ if ($replSummary) {
   $replLines = $replSummary -split "`n"
   $replData = @()
   
-  # Parse repadmin output more robustly
-  $inDataSection = $false
+  # Parse repadmin /replsummary output
+  # Looking for lines that contain DC names with replication stats
+  $sourceSection = $false
+  $destSection = $false
+  
   foreach ($line in $replLines) {
-    if ($line -match '^\s*Source DSA\s+') { $inDataSection = $true; continue }
-    if (-not $inDataSection) { continue }
-    if ($line -match '^\s*$') { continue }
+    # Detect section headers
+    if ($line -match 'Source DSA') { $sourceSection = $true; $destSection = $false; continue }
+    if ($line -match 'Destination DSA') { $destSection = $true; $sourceSection = $false; continue }
     
-    # Match DC replication data
-    if ($line -match '^\s*(\S+)\s+(\d+)\s*/\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)') {
+    # Skip empty lines and headers
+    if ($line -match '^\s*$') { continue }
+    if ($line -match '^[-=\s]+$') { continue }
+    if ($line -match 'largest delta|fails/total') { continue }
+    
+    # Parse data lines - format: SERVERNAME   :11s   0 / 5   0
+    if ($line -match '^\s*(\S+)\s+:(\d+)s\s+(\d+)\s*/\s*(\d+)\s+(\d+)') {
+      $dcName = $matches[1]
+      $delta = $matches[2]
+      $fails = $matches[3]
+      $total = $matches[4]
+      $error = $matches[5]
+      
+      $type = if ($sourceSection) { 'Source' } elseif ($destSection) { 'Destination' } else { 'Unknown' }
+      
       $replData += [pscustomobject]@{
-        DC = $matches[1]
-        LargestDelta = [int]$matches[2]
-        Total = [int]$matches[3]
-        Fails = [int]$matches[4]
-        TotalFails = [int]$matches[5]
-        LastSuccess = $matches[6]
-        LastFailure = $matches[7]
+        DC = $dcName
+        Type = $type
+        LargestDelta = [int]$delta
+        Fails = [int]$fails
+        Total = [int]$total
+        Errors = [int]$error
       }
     }
   }
   
   if ($replData.Count -gt 0) {
-    $replRows = $replData | ForEach-Object {
-      # Status badge based on failures
-      $statusBadge = if ([int]$_.TotalFails -eq 0 -and [int]$_.Fails -eq 0) {
-        '<span class="repl-badge repl-badge-success">✓ OK</span>'
-      } elseif ([int]$_.TotalFails -gt 0) {
+    # Group by DC to combine Source and Destination data
+    $replSummaryByDC = @{}
+    
+    foreach ($item in $replData) {
+      if (-not $replSummaryByDC.ContainsKey($item.DC)) {
+        $replSummaryByDC[$item.DC] = @{
+          DC = $item.DC
+          SourceDelta = 0
+          SourceFails = 0
+          SourceTotal = 0
+          SourceErrors = 0
+          DestDelta = 0
+          DestFails = 0
+          DestTotal = 0
+          DestErrors = 0
+        }
+      }
+      
+      if ($item.Type -eq 'Source') {
+        $replSummaryByDC[$item.DC].SourceDelta = $item.LargestDelta
+        $replSummaryByDC[$item.DC].SourceFails = $item.Fails
+        $replSummaryByDC[$item.DC].SourceTotal = $item.Total
+        $replSummaryByDC[$item.DC].SourceErrors = $item.Errors
+      } else {
+        $replSummaryByDC[$item.DC].DestDelta = $item.LargestDelta
+        $replSummaryByDC[$item.DC].DestFails = $item.Fails
+        $replSummaryByDC[$item.DC].DestTotal = $item.Total
+        $replSummaryByDC[$item.DC].DestErrors = $item.Errors
+      }
+    }
+    
+    $replRows = $replSummaryByDC.Values | ForEach-Object {
+      $totalErrors = $_.SourceErrors + $_.DestErrors
+      $totalFails = $_.SourceFails + $_.DestFails
+      $maxDelta = [Math]::Max($_.SourceDelta, $_.DestDelta)
+      
+      # Status badge
+      $statusBadge = if ($totalErrors -eq 0 -and $totalFails -eq 0) {
+        '<span class="repl-badge repl-badge-success">✓ HEALTHY</span>'
+      } elseif ($totalErrors -gt 0) {
         '<span class="repl-badge repl-badge-error">✗ ERROR</span>'
       } else {
         '<span class="repl-badge repl-badge-warning">⚠ WARNING</span>'
       }
       
-      # Color coding for delta
-      $deltaClass = if ([int]$_.LargestDelta -lt 60) { 'repl-status-good' }
-                    elseif ([int]$_.LargestDelta -lt 180) { 'repl-status-warn' }
+      # Delta color
+      $deltaClass = if ($maxDelta -lt 60) { 'repl-status-good' }
+                    elseif ($maxDelta -lt 300) { 'repl-status-warn' }
                     else { 'repl-status-error' }
       
-      $failsClass = if ([int]$_.TotalFails -gt 0) { 'repl-status-error' } else { 'repl-status-good' }
+      # Error color
+      $errorClass = if ($totalErrors -gt 0) { 'repl-status-error' } 
+                    elseif ($totalFails -gt 0) { 'repl-status-warn' }
+                    else { 'repl-status-good' }
       
       @"
 <tr>
-  <td>$($_.DC)</td>
-  <td class="$deltaClass">$($_.LargestDelta) min</td>
-  <td>$($_.Total)</td>
-  <td>$($_.Fails)</td>
-  <td class="$failsClass">$($_.TotalFails)</td>
-  <td>$($_.LastSuccess)</td>
-  <td>$($_.LastFailure)</td>
-  <td>$statusBadge</td>
+  <td><strong>$($_.DC)</strong></td>
+  <td class="$deltaClass">$($_.SourceDelta)s</td>
+  <td>$($_.SourceFails) / $($_.SourceTotal)</td>
+  <td class="$errorClass">$($_.SourceErrors)</td>
+  <td class="$deltaClass">$($_.DestDelta)s</td>
+  <td>$($_.DestFails) / $($_.DestTotal)</td>
+  <td class="$errorClass">$($_.DestErrors)</td>
+  <td style="text-align: center;">$statusBadge</td>
 </tr>
 "@
     } | Out-String
@@ -678,14 +733,18 @@ if ($replSummary) {
   <table class="repl-table">
     <thead>
       <tr>
-        <th>Domain Controller</th>
-        <th>Largest Delta</th>
-        <th>Total Links</th>
-        <th>Current Fails</th>
-        <th>Total Fails</th>
-        <th>Last Success</th>
-        <th>Last Failure</th>
-        <th>Status</th>
+        <th rowspan="2">Domain Controller</th>
+        <th colspan="3" style="text-align: center; border-right: 2px solid #374151;">Source DSA</th>
+        <th colspan="3" style="text-align: center; border-right: 2px solid #374151;">Destination DSA</th>
+        <th rowspan="2" style="text-align: center;">Status</th>
+      </tr>
+      <tr>
+        <th style="border-right: 1px solid #1f2937;">Largest Delta</th>
+        <th style="border-right: 1px solid #1f2937;">Fails/Total</th>
+        <th style="border-right: 2px solid #374151;">Errors</th>
+        <th style="border-right: 1px solid #1f2937;">Largest Delta</th>
+        <th style="border-right: 1px solid #1f2937;">Fails/Total</th>
+        <th style="border-right: 2px solid #374151;">Errors</th>
       </tr>
     </thead>
     <tbody>
@@ -695,7 +754,13 @@ if ($replSummary) {
 </div>
 "@
   } else {
-    $replTableHtml = "<div class='muted' style='margin-top: 16px;'>No replication data available or unable to parse output.</div><pre>$([System.Web.HttpUtility]::HtmlEncode($replSummary))</pre>"
+    # Fallback: show raw output in a formatted pre tag
+    $replTableHtml = @"
+<div class="muted" style="margin-bottom: 12px;">Unable to parse replication summary data. Raw output below:</div>
+<div style="background: #0b1220; border: 1px solid #1f2937; border-radius: 8px; padding: 16px; overflow-x: auto;">
+  <pre style="margin: 0; max-height: none;">$([System.Web.HttpUtility]::HtmlEncode($replSummary))</pre>
+</div>
+"@
   }
 }
 
