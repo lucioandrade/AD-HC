@@ -321,15 +321,21 @@ $fsmo = [pscustomobject]@{
 # ===================== Metrics/Summary =====================
 $total = $results.Count
 
+# Count all FAIL statuses across all health columns for each DC
 $healthColumns = @(
   'Ping','DNS_Service','NTDS_Service','NetLogon_Service',
   'Connectivity','Advertising','NetLogons','ServicesTest',
   'ReplicationsTest','Topology','SysVol','FSMO','Replication_RepAdmin'
 )
-$failCount = ($results | Where-Object {
-  foreach ($c in $healthColumns) { if ($_.$c -eq 'FAIL') { return $true } }
-  return $false
-}).Count
+
+$failCount = 0
+foreach ($dc in $results) {
+  foreach ($col in $healthColumns) {
+    if ($dc.$col -eq 'FAIL') {
+      $failCount++
+    }
+  }
+}
 
 # ===================== CSV export (optional) =====================
 if ($Csv) {
@@ -351,8 +357,14 @@ $css = @"
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 20px; }
   .tile { background: linear-gradient(135deg, #1e293b 0%, #0b1220 100%); border: 1px solid #334155; border-radius: 10px; padding: 20px; text-align: center; transition: transform 0.2s, box-shadow 0.2s; }
   .tile:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.3); }
+  .tile-alert { background: linear-gradient(135deg, #7f1d1d 0%, #450a0a 100%); border: 2px solid #ef4444; box-shadow: 0 0 20px rgba(239, 68, 68, 0.3); animation: pulse 2s infinite; }
   .tile .k { font-size: 13px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
   .tile .v { font-size: 32px; font-weight: 700; color: #fff; }
+  
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.3); }
+    50% { box-shadow: 0 0 30px rgba(239, 68, 68, 0.6); }
+  }
   
   .dc-card { background: #0b1220; border: 1px solid #1f2937; border-radius: 10px; padding: 20px; margin-bottom: 16px; transition: all 0.2s; }
   .dc-card:hover { border-color: #3b82f6; box-shadow: 0 4px 16px rgba(59, 130, 246, 0.1); }
@@ -361,6 +373,8 @@ $css = @"
   .dc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
   .dc-item { background: #151f30; padding: 12px; border-radius: 6px; border-left: 3px solid #374151; cursor: pointer; transition: all 0.2s; }
   .dc-item:hover { background: #1a2332; border-left-color: #3b82f6; transform: translateX(2px); }
+  .dc-item-static { background: #151f30; padding: 12px; border-radius: 6px; border-left: 3px solid #374151; cursor: default; transition: all 0.2s; }
+  .dc-item-static:hover { background: #151f30; border-left-color: #374151; transform: none; }
   .dc-item-label { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
   .dc-item-value { display: flex; align-items: center; gap: 8px; }
   
@@ -451,26 +465,29 @@ $dcCards = $results | ForEach-Object {
   $dcSafe = $dcName -replace '[^a-zA-Z0-9]', '_'
   
   $statusItems = @(
-    @{Label='Ping'; Value=$_.Ping; Key='Ping'},
-    @{Label='DNS Service'; Value=$_.DNS_Service; Key='DNS_Service'},
-    @{Label='NTDS Service'; Value=$_.NTDS_Service; Key='NTDS_Service'},
-    @{Label='NetLogon'; Value=$_.NetLogon_Service; Key='NetLogon_Service'},
-    @{Label='Connectivity'; Value=$_.Connectivity; Key='Connectivity'},
-    @{Label='Advertising'; Value=$_.Advertising; Key='Advertising'},
-    @{Label='NetLogons'; Value=$_.NetLogons; Key='NetLogons'},
-    @{Label='Services'; Value=$_.ServicesTest; Key='Services'},
-    @{Label='Replications'; Value=$_.ReplicationsTest; Key='Replications'},
-    @{Label='RepAdmin'; Value=$_.Replication_RepAdmin; Key='RepAdmin'},
-    @{Label='FSMO'; Value=$_.FSMO; Key='FSMO'},
-    @{Label='SysVol'; Value=$_.SysVol; Key='SysVolCheck'},
-    @{Label='Topology'; Value=$_.Topology; Key='Topology'}
+    @{Label='Ping'; Value=$_.Ping; Key='Ping'; HasDetail=$false},
+    @{Label='DNS Service'; Value=$_.DNS_Service; Key='DNS_Service'; HasDetail=$false},
+    @{Label='NTDS Service'; Value=$_.NTDS_Service; Key='NTDS_Service'; HasDetail=$false},
+    @{Label='NetLogon'; Value=$_.NetLogon_Service; Key='NetLogon_Service'; HasDetail=$false},
+    @{Label='Connectivity'; Value=$_.Connectivity; Key='Connectivity'; HasDetail=$true},
+    @{Label='Advertising'; Value=$_.Advertising; Key='Advertising'; HasDetail=$true},
+    @{Label='NetLogons'; Value=$_.NetLogons; Key='NetLogons'; HasDetail=$true},
+    @{Label='Services'; Value=$_.ServicesTest; Key='Services'; HasDetail=$true},
+    @{Label='Replications'; Value=$_.ReplicationsTest; Key='Replications'; HasDetail=$true},
+    @{Label='RepAdmin'; Value=$_.Replication_RepAdmin; Key='RepAdmin'; HasDetail=$false},
+    @{Label='FSMO'; Value=$_.FSMO; Key='FSMO'; HasDetail=$false},
+    @{Label='SysVol'; Value=$_.SysVol; Key='SysVolCheck'; HasDetail=$true},
+    @{Label='Topology'; Value=$_.Topology; Key='Topology'; HasDetail=$true}
   )
   
   $itemsHtml = $statusItems | ForEach-Object {
     $badgeHtml = Badge $_.Value
     $itemKey = $_.Key
+    $itemClass = if ($_.HasDetail) { 'dc-item' } else { 'dc-item-static' }
+    $onclickAttr = if ($_.HasDetail) { "onclick=`"toggleDetail('${dcSafe}_$itemKey')`"" } else { '' }
+    
     @"
-    <div class="dc-item" onclick="toggleDetail('${dcSafe}_$itemKey')">
+    <div class="$itemClass" $onclickAttr>
       <div class="dc-item-label">$($_.Label)</div>
       <div class="dc-item-value">$badgeHtml</div>
     </div>
@@ -711,9 +728,9 @@ $css
           <div class="k">Domain Controllers</div>
           <div class="v">$total</div>
         </div>
-        <div class="tile">
+        <div class="tile $(if($failCount -gt 0){'tile-alert'})">
           <div class="k">Total Failures</div>
-          <div class="v" style="color: $(if($failCount -gt 0){'#ef4444'}else{'#10b981'})">$failCount</div>
+          <div class="v" style="color: $(if($failCount -gt 0){'#fca5a5'}else{'#10b981'})">$failCount</div>
         </div>
         <div class="tile">
           <div class="k">Forest</div>
