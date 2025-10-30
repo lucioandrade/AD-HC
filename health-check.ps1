@@ -228,11 +228,14 @@ function Get-HardwareInfo {
 }
 
 function Test-Services {
-  param([string]$Server,[string[]]$Names=@('DNS','NTDS','Netlogon'))
+  param([string]$Server,[string[]]$Names=@('DNS','NTDS','kdc','Netlogon','DFSR','W32Time'))
   $map = @{
     'DNS'      = 'DNS'
     'NTDS'     = 'NTDS'
+    'kdc'      = 'kdc'
     'Netlogon' = 'Netlogon'
+    'DFSR'     = 'DFSR'
+    'W32Time'  = 'W32Time'
   }
   $result = @{}
   foreach ($n in $Names) {
@@ -277,6 +280,7 @@ $detailBlobs = @()
 $dcdiagTests = @(
   'Connectivity',
   'Advertising',
+  'DNS',
   'NetLogons',
   'Services',
   'Replications',
@@ -313,9 +317,13 @@ foreach ($dc in $allDCs) {
     Ping                 = New-Status $pingOk
     DNS_Service          = New-Status $svc.DNS
     NTDS_Service         = New-Status $svc.NTDS
+    KDC_Service          = New-Status $svc.kdc
     NetLogon_Service     = New-Status $svc.Netlogon
+    DFSR_Service         = New-Status $svc.DFSR
+    W32Time_Service      = New-Status $svc.W32Time
     Connectivity         = $testResults['Connectivity']
     Advertising          = $testResults['Advertising']
+    DNS                  = $testResults['DNS']
     NetLogons            = $testResults['NetLogons']
     ServicesTest         = $testResults['Services']
     ReplicationsTest     = $testResults['Replications']
@@ -353,8 +361,8 @@ $total = $results.Count
 
 # Count all FAIL statuses across all health columns for each DC
 $healthColumns = @(
-  'Ping','DNS_Service','NTDS_Service','NetLogon_Service',
-  'Connectivity','Advertising','NetLogons','ServicesTest',
+  'Ping','DNS_Service','NTDS_Service','KDC_Service','NetLogon_Service','DFSR_Service','W32Time_Service',
+  'Connectivity','Advertising','DNS','NetLogons','ServicesTest',
   'ReplicationsTest','Topology','SysVol','FSMO','Replication_RepAdmin'
 )
 
@@ -424,17 +432,22 @@ $css = @"
   .icon-ok { background: #10b981; }
   .icon-fail { background: #ef4444; }
   
-  /* SUPER COMPACT HARDWARE */
+  /* SUPER COMPACT HARDWARE WITH TOOLTIP */
   .hw { background: #0d1117; border: 1px solid #1f2937; border-radius: 6px; padding: 10px; margin-top: 10px; }
   .hw-title { font-size: 11px; font-weight: 700; color: #cbd5e1; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
   .hw-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
-  .hw-item { }
+  .hw-item { position: relative; }
   .hw-label { font-size: 9px; color: #9ca3af; margin-bottom: 3px; display: flex; justify-content: space-between; font-weight: 600; }
-  .hw-bar { background: #1e293b; border-radius: 3px; height: 6px; overflow: hidden; position: relative; }
+  .hw-bar { background: #1e293b; border-radius: 3px; height: 6px; overflow: hidden; position: relative; cursor: help; }
+  .hw-bar:hover .hw-tooltip { opacity: 1; visibility: visible; }
   .hw-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
   .hw-good { background: linear-gradient(90deg, #10b981, #059669); }
   .hw-warn { background: linear-gradient(90deg, #f59e0b, #d97706); }
   .hw-crit { background: linear-gradient(90deg, #ef4444, #dc2626); }
+  
+  /* TOOLTIP */
+  .hw-tooltip { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: rgba(17, 24, 39, 0.98); border: 1px solid #374151; border-radius: 4px; padding: 6px 10px; font-size: 10px; color: #e5e7eb; white-space: nowrap; opacity: 0; visibility: hidden; transition: opacity 0.2s, visibility 0.2s; pointer-events: none; z-index: 1000; margin-bottom: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+  .hw-tooltip::after { content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: #374151; }
   
   /* COMPACT REPLICATION TABLE */
   .table-wrap { overflow-x: auto; margin-top: 12px; border-radius: 6px; border: 1px solid #1f2937; }
@@ -503,9 +516,13 @@ $dcCards = $results | ForEach-Object {
     @{Label='Ping'; Value=$_.Ping; Key='Ping'; HasDetail=$false},
     @{Label='DNS Svc'; Value=$_.DNS_Service; Key='DNS_Service'; HasDetail=$false},
     @{Label='NTDS Svc'; Value=$_.NTDS_Service; Key='NTDS_Service'; HasDetail=$false},
-    @{Label='NetLogon'; Value=$_.NetLogon_Service; Key='NetLogon_Service'; HasDetail=$false},
+    @{Label='KDC Svc'; Value=$_.KDC_Service; Key='KDC_Service'; HasDetail=$false},
+    @{Label='NetLogon Svc'; Value=$_.NetLogon_Service; Key='NetLogon_Service'; HasDetail=$false},
+    @{Label='DFSR Svc'; Value=$_.DFSR_Service; Key='DFSR_Service'; HasDetail=$false},
+    @{Label='W32Time Svc'; Value=$_.W32Time_Service; Key='W32Time_Service'; HasDetail=$false},
     @{Label='Connect'; Value=$_.Connectivity; Key='Connectivity'; HasDetail=$true},
     @{Label='Advertise'; Value=$_.Advertising; Key='Advertising'; HasDetail=$true},
+    @{Label='DNS Test'; Value=$_.DNS; Key='DNS'; HasDetail=$true},
     @{Label='NetLogons'; Value=$_.NetLogons; Key='NetLogons'; HasDetail=$true},
     @{Label='Services'; Value=$_.ServicesTest; Key='Services'; HasDetail=$true},
     @{Label='Replication'; Value=$_.ReplicationsTest; Key='Replications'; HasDetail=$true},
@@ -544,20 +561,23 @@ $dcCards = $results | ForEach-Object {
     $cpuVal = Show-NA $hw.CPUUsagePct
     $cpuPct = if ($hw.CPUUsagePct) { $hw.CPUUsagePct } else { 0 }
     $cpuClass = if ($cpuPct -lt 70) { 'hw-good' } elseif ($cpuPct -lt 85) { 'hw-warn' } else { 'hw-crit' }
-    $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>CPU</span><span>$cpuVal%</span></div><div class='hw-bar'><div class='hw-fill $cpuClass' style='width: $cpuPct%'></div></div></div>"
+    $cpuAvail = if ($hw.CPUUsagePct) { [Math]::Round(100 - $hw.CPUUsagePct, 1) } else { 'N/A' }
+    $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>CPU</span><span>$cpuVal%</span></div><div class='hw-bar'><div class='hw-fill $cpuClass' style='width: $cpuPct%'></div><div class='hw-tooltip'>Usado: $cpuVal% | Disponível: $cpuAvail%</div></div></div>"
     
     # Memory
     $memUsedPct = if ($hw.MemUsedPct) { $hw.MemUsedPct } else { 0 }
     $memClass = if ($memUsedPct -lt 70) { 'hw-good' } elseif ($memUsedPct -lt 85) { 'hw-warn' } else { 'hw-crit' }
     $memLabel = "$(Show-NA $hw.MemUsedGB)/$(Show-NA $hw.MemTotalGB)GB"
-    $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>RAM</span><span>$memLabel</span></div><div class='hw-bar'><div class='hw-fill $memClass' style='width: $memUsedPct%'></div></div></div>"
+    $memAvail = if ($hw.MemUsedPct) { [Math]::Round(100 - $hw.MemUsedPct, 1) } else { 'N/A' }
+    $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>RAM</span><span>$memLabel</span></div><div class='hw-bar'><div class='hw-fill $memClass' style='width: $memUsedPct%'></div><div class='hw-tooltip'>Usado: $(Show-NA $hw.MemUsedPct)% | Disponível: $memAvail%</div></div></div>"
 
     # Disks (compact)
     if ($hw.Disks -and $hw.Disks.Count -gt 0) {
       foreach ($disk in $hw.Disks) {
         $diskClass = if ($disk.UsedPct -lt 70) { 'hw-good' } elseif ($disk.UsedPct -lt 85) { 'hw-warn' } else { 'hw-crit' }
         $diskLabel = "$($disk.UsedGB)/$($disk.SizeGB)GB"
-        $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>$($disk.Drive)</span><span>$diskLabel</span></div><div class='hw-bar'><div class='hw-fill $diskClass' style='width: $($disk.UsedPct)%'></div></div></div>"
+        $diskAvail = [Math]::Round(100 - $disk.UsedPct, 1)
+        $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>$($disk.Drive)</span><span>$diskLabel</span></div><div class='hw-bar'><div class='hw-fill $diskClass' style='width: $($disk.UsedPct)%'></div><div class='hw-tooltip'>Usado: $($disk.UsedPct)% ($($disk.UsedGB)GB) | Disponível: $diskAvail% ($($disk.FreeGB)GB)</div></div></div>"
       }
     }
 
@@ -644,8 +664,8 @@ if ($replSummary) {
     }
     
     # Skip empty lines and headers
-    if ($line -match '^\s*$') { continue }
-    if ($line -match '^[-=\s]+$') { continue }
+    if ($line -match '^\s*) { continue }
+    if ($line -match '^[-=\s]+) { continue }
     if ($line -match 'largest delta|fails/total|DSA') { continue }
     
     # Parse data lines - Try multiple formats
@@ -927,7 +947,7 @@ $css
     </div>
 
     <div class="footer">
-      AD Health Report v2.5 | ADHealthReport.ps1
+      AD Health Report v2.6 (Enhanced) | ADHealthReport.ps1
     </div>
   </div>
   
