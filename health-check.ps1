@@ -30,12 +30,10 @@ function ConvertTo-HtmlEncoded {
   param([string]$Text)
   if ([string]::IsNullOrEmpty($Text)) { return "" }
   
-  # Try System.Web.HttpUtility first
   if ([System.Web.HttpUtility] -as [Type]) {
     return [System.Web.HttpUtility]::HtmlEncode($Text)
   }
   
-  # Fallback to manual encoding
   $Text = $Text -replace '&', '&amp;'
   $Text = $Text -replace '<', '&lt;'
   $Text = $Text -replace '>', '&gt;'
@@ -46,10 +44,7 @@ function ConvertTo-HtmlEncoded {
 
 function Get-ADLevelShort {
   param([string]$Level)
-  # Extract year/version from mode strings like "Windows2016Forest" or "Windows2012R2Domain"
-  if ($Level -match '(\d{4}R?\d?)') {
-    return $matches[1]
-  }
+  if ($Level -match '(\d{4}R?\d?)') { return $matches[1] }
   return $Level
 }
 
@@ -96,18 +91,8 @@ function Invoke-External {
   }
 }
 
-function Invoke-DcDiag {
-  param([string]$Server,[string[]]$ExtraArgs)
-  $args = @("/s:$Server", "/c", "/v")
-  if ($ExtraArgs) { $args += $ExtraArgs }
-  Invoke-External -FileName 'dcdiag.exe' -Arguments $args
-}
-
 function Invoke-DcDiagTest {
-  param(
-    [string]$Server,
-    [string]$TestName
-  )
+  param([string]$Server,[string]$TestName)
   $res = Invoke-External -FileName 'dcdiag.exe' -Arguments @("/s:$Server", "/test:$TestName", "/v")
   $text = $res.Output + "`n" + $res.Error
   $isFail = $false
@@ -146,28 +131,17 @@ function Try-GetWmi {
 
 function Get-CPUUsage {
   param([string]$Server)
-  
   try {
     Write-Verbose "Measuring CPU usage for $Server (10 seconds)..."
-    
-    # First sample
     $cpu1 = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -ComputerName $Server -Filter "Name='_Total'" -ErrorAction Stop
-    if (-not $cpu1) {
-      $cpu1 = Try-GetWmi -Class Win32_PerfFormattedData_PerfOS_Processor -ComputerName $Server -Filter "Name='_Total'"
-    }
+    if (-not $cpu1) { $cpu1 = Try-GetWmi -Class Win32_PerfFormattedData_PerfOS_Processor -ComputerName $Server -Filter "Name='_Total'" }
     
     Start-Sleep -Seconds 10
     
-    # Second sample
     $cpu2 = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -ComputerName $Server -Filter "Name='_Total'" -ErrorAction Stop
-    if (-not $cpu2) {
-      $cpu2 = Try-GetWmi -Class Win32_PerfFormattedData_PerfOS_Processor -ComputerName $Server -Filter "Name='_Total'"
-    }
+    if (-not $cpu2) { $cpu2 = Try-GetWmi -Class Win32_PerfFormattedData_PerfOS_Processor -ComputerName $Server -Filter "Name='_Total'" }
     
-    if ($cpu2) {
-      return [Math]::Round($cpu2.PercentProcessorTime, 1)
-    }
-    
+    if ($cpu2) { return [Math]::Round($cpu2.PercentProcessorTime, 1) }
     return $null
   } catch {
     Write-Verbose "Failed to get CPU for $Server : $_"
@@ -177,27 +151,24 @@ function Get-CPUUsage {
 
 function Get-HardwareInfo {
   param([string]$Server)
-
   $os = Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $Server -ErrorAction SilentlyContinue
   $disks = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DriveType=3" -ComputerName $Server -ErrorAction SilentlyContinue
 
   if (-not $os) { $os = Try-GetWmi -Class Win32_OperatingSystem -ComputerName $Server }
   if (-not $disks) { 
     $disks = @()
-    $drives = @('C:', 'D:', 'E:')
-    foreach ($d in $drives) {
+    foreach ($d in @('C:', 'D:', 'E:')) {
       $disk = Try-GetWmi -Class Win32_LogicalDisk -ComputerName $Server -Filter "DeviceID='$d'"
       if ($disk) { $disks += $disk }
     }
   }
 
-  # Get CPU usage (10 second measurement)
   $cpuUsage = Get-CPUUsage -Server $Server
-
   $memTotalGB = if ($os) { [Math]::Round($os.TotalVisibleMemorySize/1MB,1) } else { $null }
   $memFreeGB  = if ($os) { [Math]::Round($os.FreePhysicalMemory/1MB,1) } else { $null }
   $memUsedGB  = if ($memTotalGB -and $memFreeGB) { [Math]::Round($memTotalGB - $memFreeGB, 1) } else { $null }
   $memUsedPct = if ($memTotalGB -gt 0) { [Math]::Round(($memUsedGB/$memTotalGB)*100,1) } else { $null }
+  $memFreePct = if ($memUsedPct) { [Math]::Round(100 - $memUsedPct, 1) } else { $null }
   $uptime     = if ($os) { [Math]::Round((New-TimeSpan -Start $os.LastBootUpTime -End (Get-Date)).TotalHours,1) } else { $null }
 
   $diskInfo = @()
@@ -206,41 +177,98 @@ function Get-HardwareInfo {
     $sizeGB = [Math]::Round($disk.Size/1GB,1)
     $usedGB = [Math]::Round($sizeGB - $freeGB, 1)
     $usedPct = if ($sizeGB -gt 0) { [Math]::Round(($usedGB/$sizeGB)*100,1) } else { 0 }
+    $freePct = if ($sizeGB -gt 0) { [Math]::Round(($freeGB/$sizeGB)*100,1) } else { 0 }
     
     $diskInfo += [pscustomobject]@{
-      Drive = $disk.DeviceID
-      SizeGB = $sizeGB
-      UsedGB = $usedGB
-      FreeGB = $freeGB
-      UsedPct = $usedPct
+      Drive = $disk.DeviceID; SizeGB = $sizeGB; UsedGB = $usedGB
+      FreeGB = $freeGB; UsedPct = $usedPct; FreePct = $freePct
     }
   }
 
   [pscustomobject]@{
-    UptimeHours = $uptime
-    CPUUsagePct = $cpuUsage
-    MemTotalGB  = $memTotalGB
-    MemUsedGB   = $memUsedGB
-    MemFreeGB   = $memFreeGB
-    MemUsedPct  = $memUsedPct
-    Disks       = $diskInfo
+    UptimeHours = $uptime; CPUUsagePct = $cpuUsage
+    MemTotalGB  = $memTotalGB; MemUsedGB  = $memUsedGB; MemFreeGB   = $memFreeGB
+    MemUsedPct  = $memUsedPct; MemFreePct  = $memFreePct; Disks = $diskInfo
   }
 }
 
 function Test-Services {
-  param([string]$Server,[string[]]$Names=@('DNS','NTDS','Netlogon'))
+  param([string]$Server,[string[]]$Names=@('DNS','NTDS','Netlogon','Kdc','DFSR','W32Time'))
   $map = @{
-    'DNS'      = 'DNS'
-    'NTDS'     = 'NTDS'
-    'Netlogon' = 'Netlogon'
+    'DNS'='DNS'; 'NTDS'='NTDS'; 'Netlogon'='Netlogon'
+    'Kdc'='Kdc'; 'DFSR'='DFSR'; 'W32Time'='W32Time'
   }
   $result = @{}
   foreach ($n in $Names) {
-    $svcName = $map[$n]
-    $svc = Get-Service -ComputerName $Server -Name $svcName -ErrorAction SilentlyContinue
+    $svc = Get-Service -ComputerName $Server -Name $map[$n] -ErrorAction SilentlyContinue
     $result[$n] = if ($svc) { $svc.Status -eq 'Running' } else { $false }
   }
   [pscustomobject]$result
+}
+
+function Get-CriticalEvents {
+  param([string]$Server,[int]$Hours=24)
+  try {
+    $startTime = (Get-Date).AddHours(-$Hours)
+    $logs = @('System', 'Application', 'Directory Service')
+    $criticalCount = 0; $errorCount = 0
+    
+    foreach ($log in $logs) {
+      try {
+        $events = Get-WinEvent -ComputerName $Server -FilterHashtable @{
+          LogName = $log; Level = 1,2; StartTime = $startTime
+        } -ErrorAction SilentlyContinue
+        
+        if ($events) {
+          $criticalCount += ($events | Where-Object { $_.Level -eq 1 }).Count
+          $errorCount += ($events | Where-Object { $_.Level -eq 2 }).Count
+        }
+      } catch { Write-Verbose "Could not read $log on $Server" }
+    }
+    
+    return [pscustomobject]@{
+      Critical = $criticalCount; Error = $errorCount; Total = $criticalCount + $errorCount
+    }
+  } catch {
+    return [pscustomobject]@{ Critical = $null; Error = $null; Total = $null }
+  }
+}
+
+function Get-ADBackupStatus {
+  param([string]$Server)
+  try {
+    $res = Invoke-External -FileName 'repadmin.exe' -Arguments @('/showbackup', $Server)
+    if ($res.Output -match 'dsaMain\s+:\s+(.+)') {
+      try {
+        $backupDate = [DateTime]::Parse($matches[1].Trim())
+        $daysSince = [Math]::Round((New-TimeSpan -Start $backupDate -End (Get-Date)).TotalDays, 1)
+        return [pscustomobject]@{
+          LastBackup = $backupDate; DaysSince = $daysSince
+          Status = if ($daysSince -lt 7) { 'OK' } elseif ($daysSince -lt 14) { 'WARN' } else { 'FAIL' }
+        }
+      } catch { }
+    }
+    return [pscustomobject]@{ LastBackup = $null; DaysSince = $null; Status = 'UNKNOWN' }
+  } catch {
+    return [pscustomobject]@{ LastBackup = $null; DaysSince = $null; Status = 'UNKNOWN' }
+  }
+}
+
+function Get-TimeSync {
+  param([string]$Server)
+  try {
+    $res = Invoke-External -FileName 'w32tm.exe' -Arguments @('/stripchart', "/computer:$Server", '/samples:1', '/dataonly')
+    if ($res.Output -match '([\+\-]?\d+\.\d+)s') {
+      $offset = [Math]::Abs([double]$matches[1])
+      return [pscustomobject]@{
+        OffsetSeconds = [Math]::Round($offset, 3)
+        Status = if ($offset -lt 1) { 'OK' } elseif ($offset -lt 5) { 'WARN' } else { 'FAIL' }
+      }
+    }
+    return [pscustomobject]@{ OffsetSeconds = $null; Status = 'UNKNOWN' }
+  } catch {
+    return [pscustomobject]@{ OffsetSeconds = $null; Status = 'UNKNOWN' }
+  }
 }
 
 function New-Status { param([bool]$Ok) if ($Ok) { 'OK' } else { 'FAIL' } }
@@ -250,6 +278,7 @@ function Badge {
   switch ($val) {
     'OK'   { '<span class="badge ok">OK</span>' }
     'FAIL' { '<span class="badge fail">FAIL</span>' }
+    'WARN' { '<span class="badge warn">WARN</span>' }
     default { '<span class="badge na">N/A</span>' }
   }
 }
@@ -261,39 +290,47 @@ function Show-NA {
 }
 
 # ===================== Tools check =====================
-if (-not (Get-Module -ListAvailable ActiveDirectory)) { throw "ActiveDirectory module not found. Install RSAT." }
-if (-not (Test-Tool 'dcdiag.exe')) { throw "dcdiag.exe not found. Install RSAT/DC tools." }
-if (-not (Test-Tool 'repadmin.exe')) { throw "repadmin.exe not found. Install RSAT/DC tools." }
-
+if (-not (Get-Module -ListAvailable ActiveDirectory)) { throw "ActiveDirectory module not found." }
+if (-not (Test-Tool 'dcdiag.exe')) { throw "dcdiag.exe not found." }
+if (-not (Test-Tool 'repadmin.exe')) { throw "repadmin.exe not found." }
 Import-Module ActiveDirectory -ErrorAction Stop
 
 # ===================== Discover DCs =====================
 $allDCs = Get-DCList -UsingOU:$UsingOU -OrganizationUnitDN $OrganizationUnitDN -DomainControllers $DomainControllers
 
+Write-Verbose "Collecting DC details..."
+$dcDetails = @{}
+foreach ($dcName in $allDCs) {
+  try {
+    $dcInfo = Get-ADDomainController -Identity $dcName -ErrorAction Stop
+    $ipAddress = $dcInfo.IPv4Address
+    if (-not $ipAddress) {
+      try {
+        $ipAddress = [System.Net.Dns]::GetHostAddresses($dcName) | 
+                     Where-Object { $_.AddressFamily -eq 'InterNetwork' } | 
+                     Select-Object -First 1 -ExpandProperty IPAddressToString
+      } catch { $ipAddress = "N/A" }
+    }
+    $dcDetails[$dcName] = @{ IP = $ipAddress; IsGC = $dcInfo.IsGlobalCatalog }
+  } catch {
+    $dcDetails[$dcName] = @{ IP = "N/A"; IsGC = $false }
+  }
+}
+
 # ===================== Collect per DC =====================
 $results = @()
 $detailBlobs = @()
-
 $dcdiagTests = @(
-  'Connectivity',
-  'Advertising',
-  'NetLogons',
-  'Services',
-  'Replications',
-  'Topology',
-  'SysVolCheck',
-  'KnowsOfRoleHolders',
-  'RidManager'
+  'Connectivity','Advertising','DNS','NetLogons','Services',
+  'Replications','Topology','SysVolCheck','KnowsOfRoleHolders','RidManager'
 )
 
 foreach ($dc in $allDCs) {
   Write-Verbose "Collecting $dc ..."
-
   $pingOk = Test-Connection -ComputerName $dc -Count 1 -Quiet -ErrorAction SilentlyContinue
-  $svc    = Test-Services -Server $dc
+  $svc = Test-Services -Server $dc
 
-  $testResults = @{}
-  $testOutputs = @{}
+  $testResults = @{}; $testOutputs = @{}
   foreach ($t in $dcdiagTests) {
     $tres = Invoke-DcDiagTest -Server $dc -TestName $t
     $testResults[$t] = $tres.Status
@@ -301,419 +338,99 @@ foreach ($dc in $allDCs) {
   }
 
   $fsmStatus = if ($testResults['KnowsOfRoleHolders'] -eq 'FAIL' -or $testResults['RidManager'] -eq 'FAIL') { 'FAIL' } else { 'OK' }
-
-  $rep  = Invoke-RepAdmin -Server $dc
-  $repFail = ($rep.Output -match '(?i)\b(fail|failed|error|erro)\b')
-  $repStatus = if ($repFail) { 'FAIL' } else { 'OK' }
-
+  $rep = Invoke-RepAdmin -Server $dc
+  $repStatus = if ($rep.Output -match '(?i)\b(fail|failed|error|erro)\b') { 'FAIL' } else { 'OK' }
+  
+  $events = Get-CriticalEvents -Server $dc -Hours 24
+  $backup = Get-ADBackupStatus -Server $dc
+  $timeSync = Get-TimeSync -Server $dc
   $hw = Get-HardwareInfo -Server $dc
 
   $obj = [pscustomobject]@{
-    DC                   = $dc
-    Ping                 = New-Status $pingOk
-    DNS_Service          = New-Status $svc.DNS
-    NTDS_Service         = New-Status $svc.NTDS
-    NetLogon_Service     = New-Status $svc.Netlogon
-    Connectivity         = $testResults['Connectivity']
-    Advertising          = $testResults['Advertising']
-    NetLogons            = $testResults['NetLogons']
-    ServicesTest         = $testResults['Services']
-    ReplicationsTest     = $testResults['Replications']
-    Topology             = $testResults['Topology']
-    SysVol               = $testResults['SysVolCheck']
-    FSMO                 = $fsmStatus
-    Replication_RepAdmin = $repStatus
-    Hardware             = $hw
+    DC=$dc; IP=$dcDetails[$dc].IP; IsGlobalCatalog=$dcDetails[$dc].IsGC
+    Ping=New-Status $pingOk; DNS_Service=New-Status $svc.DNS; NTDS_Service=New-Status $svc.NTDS
+    NetLogon_Service=New-Status $svc.Netlogon; Kdc_Service=New-Status $svc.Kdc
+    DFSR_Service=New-Status $svc.DFSR; W32Time_Service=New-Status $svc.W32Time
+    Connectivity=$testResults['Connectivity']; Advertising=$testResults['Advertising']
+    DNSTest=$testResults['DNS']; NetLogons=$testResults['NetLogons']
+    ServicesTest=$testResults['Services']; ReplicationsTest=$testResults['Replications']
+    Topology=$testResults['Topology']; SysVol=$testResults['SysVolCheck']
+    FSMO=$fsmStatus; Replication_RepAdmin=$repStatus
+    CriticalEvents=$events.Total; BackupStatus=$backup.Status; BackupDays=$backup.DaysSince
+    TimeSyncStatus=$timeSync.Status; TimeSyncOffset=$timeSync.OffsetSeconds; Hardware=$hw
   }
   $results += $obj
-
   $detailBlobs += [pscustomobject]@{
-    DC            = $dc
-    TestOutputs   = $testOutputs
-    RepAdminText  = $rep.Output
+    DC=$dc; TestOutputs=$testOutputs; RepAdminText=$rep.Output
   }
 }
 
-# ===================== Replication Summary =====================
+# ===================== Summary =====================
 $replSummary = Get-ReplSummary
-
-# ===================== Forest/Domain & FSMO holders =====================
 $forest = Get-ADForest
 $domain = Get-ADDomain
 $fsmo = [pscustomobject]@{
-  SchemaMaster          = $forest.SchemaMaster
-  DomainNamingMaster    = $forest.DomainNamingMaster
-  PDCEmulator           = $domain.PDCEmulator
-  RIDMaster             = $domain.RIDMaster
-  InfrastructureMaster  = $domain.InfrastructureMaster
+  SchemaMaster=$forest.SchemaMaster; DomainNamingMaster=$forest.DomainNamingMaster
+  PDCEmulator=$domain.PDCEmulator; RIDMaster=$domain.RIDMaster
+  InfrastructureMaster=$domain.InfrastructureMaster
 }
 
-# ===================== Metrics/Summary =====================
 $total = $results.Count
-
-# Count all FAIL statuses across all health columns for each DC
 $healthColumns = @(
-  'Ping','DNS_Service','NTDS_Service','NetLogon_Service',
-  'Connectivity','Advertising','NetLogons','ServicesTest',
+  'Ping','DNS_Service','NTDS_Service','NetLogon_Service','Kdc_Service','DFSR_Service','W32Time_Service',
+  'Connectivity','Advertising','DNSTest','NetLogons','ServicesTest',
   'ReplicationsTest','Topology','SysVol','FSMO','Replication_RepAdmin'
 )
 
-$failCount = 0
+$failCount = 0; $warnCount = 0
 foreach ($dc in $results) {
   foreach ($col in $healthColumns) {
-    if ($dc.$col -eq 'FAIL') {
-      $failCount++
-    }
+    if ($dc.$col -eq 'FAIL') { $failCount++ }
+    elseif ($dc.$col -eq 'WARN') { $warnCount++ }
   }
+  if ($dc.BackupStatus -eq 'FAIL') { $failCount++ }
+  elseif ($dc.BackupStatus -eq 'WARN') { $warnCount++ }
+  if ($dc.TimeSyncStatus -eq 'FAIL') { $failCount++ }
+  elseif ($dc.TimeSyncStatus -eq 'WARN') { $warnCount++ }
 }
 
-# ===================== CSV export (optional) =====================
+# ===================== CSV =====================
 if ($Csv) {
   $csvPath = [IO.Path]::ChangeExtension((Resolve-Path $OutputPath),'.csv')
   $results | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $csvPath
 }
 
-# ===================== HTML =====================
-$css = @"
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background: #0a0e1a; color: #e2e8f0; padding: 16px; font-size: 13px; line-height: 1.4; }
-  .container { max-width: 1600px; margin: 0 auto; }
-  
-  /* COMPACT HEADER */
-  .header { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 1px solid #334155; border-radius: 8px; padding: 16px 20px; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,.3); }
-  .header-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
-  .header-title { font-size: 22px; font-weight: 700; color: #f9fafb; margin: 0; }
-  .header-meta { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
-  .meta-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #94a3b8; }
-  .meta-label { font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-  .meta-value { color: #cbd5e1; }
-  
-  /* COMPACT METRICS */
-  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
-  .metric { background: rgba(30, 41, 59, 0.5); border: 1px solid #334155; border-radius: 6px; padding: 10px 14px; text-align: center; }
-  .metric-label { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600; }
-  .metric-value { font-size: 24px; font-weight: 700; color: #fff; }
-  .metric-alert { background: #7f1d1d; border-color: #ef4444; animation: pulse 2s infinite; }
-  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 rgba(239, 68, 68, 0.4); } 50% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.6); } }
-  
-  .card { background: rgba(17, 24, 39, 0.9); border: 1px solid #1f2937; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,.2); }
-  .card-title { font-size: 16px; font-weight: 700; color: #e5e7eb; margin: 0 0 12px 0; padding-bottom: 8px; border-bottom: 1px solid #374151; }
-  .card-subtitle { font-size: 11px; color: #94a3b8; margin-bottom: 12px; }
-  
-  /* ULTRA COMPACT DC CARDS */
-  .dc-card { background: #0f1419; border: 1px solid #1f2937; border-radius: 6px; padding: 12px; margin-bottom: 10px; transition: all 0.15s; }
-  .dc-card:hover { border-color: #3b82f6; }
-  .dc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #1f2937; }
-  .dc-name { font-size: 15px; font-weight: 700; color: #f9fafb; }
-  
-  /* DENSE STATUS GRID */
-  .status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 6px; margin-bottom: 10px; }
-  .status-item { background: #1a1f2e; padding: 6px 8px; border-radius: 4px; border-left: 2px solid #374151; cursor: pointer; transition: all 0.15s; }
-  .status-item:hover { background: #242938; border-left-color: #3b82f6; }
-  .status-item-static { background: #1a1f2e; padding: 6px 8px; border-radius: 4px; border-left: 2px solid #374151; cursor: default; }
-  .status-label { font-size: 9px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 3px; font-weight: 600; }
-  .status-value { display: flex; align-items: center; gap: 4px; font-size: 11px; }
-  
-  /* MINI BADGES */
-  .badge { display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; }
-  .ok { background: rgba(6, 78, 59, 0.4); color: #6ee7b7; border: 1px solid #059669; }
-  .fail { background: rgba(127, 29, 29, 0.4); color: #fca5a5; border: 1px solid #dc2626; }
-  .na { background: rgba(55, 65, 81, 0.3); color: #9ca3af; border: 1px solid #4b5563; }
-  .icon { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
-  .icon-ok { background: #10b981; }
-  .icon-fail { background: #ef4444; }
-  
-  /* SUPER COMPACT HARDWARE */
-  .hw { background: #0d1117; border: 1px solid #1f2937; border-radius: 6px; padding: 10px; margin-top: 10px; }
-  .hw-title { font-size: 11px; font-weight: 700; color: #cbd5e1; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-  .hw-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
-  .hw-item { }
-  .hw-label { font-size: 9px; color: #9ca3af; margin-bottom: 3px; display: flex; justify-content: space-between; font-weight: 600; }
-  .hw-bar { background: #1e293b; border-radius: 3px; height: 6px; overflow: hidden; position: relative; }
-  .hw-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
-  .hw-good { background: linear-gradient(90deg, #10b981, #059669); }
-  .hw-warn { background: linear-gradient(90deg, #f59e0b, #d97706); }
-  .hw-crit { background: linear-gradient(90deg, #ef4444, #dc2626); }
-  
-  /* COMPACT REPLICATION TABLE */
-  .table-wrap { overflow-x: auto; margin-top: 12px; border-radius: 6px; border: 1px solid #1f2937; }
-  .table { width: 100%; border-collapse: collapse; font-size: 11px; }
-  .table thead { background: linear-gradient(135deg, #1e293b, #0f172a); }
-  .table th { padding: 8px 10px; text-align: left; color: #cbd5e1; font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; border-bottom: 1px solid #374151; white-space: nowrap; }
-  .table thead tr:first-child th { padding: 10px; font-size: 10px; border-bottom: 2px solid #374151; }
-  .table tbody tr { transition: background 0.15s; border-bottom: 1px solid #1f2937; }
-  .table tbody tr:hover { background: rgba(59, 130, 246, 0.06); }
-  .table td { padding: 8px 10px; color: #e2e8f0; border-right: 1px solid #1f2937; }
-  .table td:first-child { font-weight: 600; color: #f9fafb; background: rgba(30, 41, 59, 0.3); }
-  .table td:last-child { border-right: none; }
-  .status-good { color: #6ee7b7; font-weight: 600; }
-  .status-warn { color: #fbbf24; font-weight: 600; }
-  .status-error { color: #fca5a5; font-weight: 600; }
-  .badge-sm { padding: 3px 8px; font-size: 8px; border-radius: 4px; font-weight: 700; text-transform: uppercase; white-space: nowrap; display: inline-block; }
-  .badge-success { background: rgba(6, 78, 59, 0.5); color: #6ee7b7; border: 1px solid #10b981; }
-  .badge-warning { background: rgba(146, 64, 14, 0.5); color: #fbbf24; border: 1px solid #f59e0b; }
-  .badge-error { background: rgba(127, 29, 29, 0.5); color: #fca5a5; border: 1px solid #ef4444; }
-  
-  /* COMPACT FSMO TABLE */
-  .fsmo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; }
-  .fsmo-item { background: #0f1419; border: 1px solid #1f2937; border-radius: 6px; padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; transition: all 0.15s; }
-  .fsmo-item:hover { background: #1a1f2e; border-color: #374151; }
-  .fsmo-role { font-size: 11px; color: #9ca3af; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
-  .fsmo-holder { font-size: 13px; color: #e5e7eb; font-weight: 700; }
-  .fsmo-icon { width: 24px; height: 24px; background: linear-gradient(135deg, #3b82f6, #1d4ed8); border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #fff; margin-right: 10px; }
-  
-  /* DETAIL SECTION */
-  .detail { display: none; margin-top: 12px; padding: 12px; background: #030712; border-radius: 6px; border: 1px solid #1f2937; }
-  .detail.active { display: block; animation: fadeIn 0.2s; }
-  .detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-  .detail-title { font-size: 12px; font-weight: 600; color: #e5e7eb; margin: 0; }
-  .detail-close { background: #374151; border: none; color: #e5e7eb; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 10px; font-weight: 600; }
-  .detail-close:hover { background: #4b5563; }
-  pre { white-space: pre-wrap; color: #cbd5e1; background: #0a0e14; padding: 10px; border-radius: 4px; font-size: 10px; line-height: 1.4; overflow-x: auto; border: 1px solid #1f2937; max-height: 300px; overflow-y: auto; margin: 0; }
-  
-  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-  
-  .footer { font-size: 10px; color: #64748b; margin-top: 20px; text-align: center; padding: 12px; border-top: 1px solid #1f2937; }
-  
-  @media (max-width: 768px) {
-    .status-grid { grid-template-columns: 1fr 1fr; }
-    .metrics { grid-template-columns: 1fr 1fr; }
-    .hw-grid { grid-template-columns: 1fr; }
-    .fsmo-grid { grid-template-columns: 1fr; }
-  }
-</style>
-"@
-
-function Badge($val){
-  $icon = if ($val -eq 'OK') { '<span class="icon icon-ok"></span>' }
-          elseif ($val -eq 'FAIL') { '<span class="icon icon-fail"></span>' }
-          else { '' }
-  
-  if ($val -eq 'OK') { "$icon <span class='badge ok'>OK</span>" }
-  elseif ($val -eq 'FAIL') { "$icon <span class='badge fail'>FAIL</span>" }
-  else { "<span class='badge na'>N/A</span>" }
-}
-
-$dcCards = $results | ForEach-Object {
-  $dcName = $_.DC
-  $dcSafe = $dcName -replace '[^a-zA-Z0-9]', '_'
-  
-  $statusItems = @(
-    @{Label='Ping'; Value=$_.Ping; Key='Ping'; HasDetail=$false},
-    @{Label='DNS Svc'; Value=$_.DNS_Service; Key='DNS_Service'; HasDetail=$false},
-    @{Label='NTDS Svc'; Value=$_.NTDS_Service; Key='NTDS_Service'; HasDetail=$false},
-    @{Label='NetLogon'; Value=$_.NetLogon_Service; Key='NetLogon_Service'; HasDetail=$false},
-    @{Label='Connect'; Value=$_.Connectivity; Key='Connectivity'; HasDetail=$true},
-    @{Label='Advertise'; Value=$_.Advertising; Key='Advertising'; HasDetail=$true},
-    @{Label='NetLogons'; Value=$_.NetLogons; Key='NetLogons'; HasDetail=$true},
-    @{Label='Services'; Value=$_.ServicesTest; Key='Services'; HasDetail=$true},
-    @{Label='Replication'; Value=$_.ReplicationsTest; Key='Replications'; HasDetail=$true},
-    @{Label='RepAdmin'; Value=$_.Replication_RepAdmin; Key='RepAdmin'; HasDetail=$false},
-    @{Label='FSMO'; Value=$_.FSMO; Key='FSMO'; HasDetail=$false},
-    @{Label='SysVol'; Value=$_.SysVol; Key='SysVolCheck'; HasDetail=$true},
-    @{Label='Topology'; Value=$_.Topology; Key='Topology'; HasDetail=$true}
-  )
-  
-  $itemsHtml = $statusItems | ForEach-Object {
-    $badgeHtml = Badge $_.Value
-    $itemKey = $_.Key
-    $itemClass = if ($_.HasDetail) { 'status-item' } else { 'status-item-static' }
-    $onclickAttr = if ($_.HasDetail) { "onclick=`"toggleDetail('${dcSafe}_$itemKey')`"" } else { '' }
-    
-    @"
-    <div class="$itemClass" $onclickAttr>
-      <div class="status-label">$($_.Label)</div>
-      <div class="status-value">$badgeHtml</div>
-    </div>
-"@
-  } | Out-String
-
-  # ULTRA COMPACT Hardware
-  $hw = $_.Hardware
-  $hwHtml = ""
-  
-  if ($hw) {
-    $metricsHtml = ""
-    
-    # Uptime (text only, no bar)
-    $uptimeVal = Show-NA $hw.UptimeHours
-    $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>Uptime</span><span>$uptimeVal hrs</span></div></div>"
-    
-    # CPU
-    $cpuVal = Show-NA $hw.CPUUsagePct
-    $cpuPct = if ($hw.CPUUsagePct) { $hw.CPUUsagePct } else { 0 }
-    $cpuClass = if ($cpuPct -lt 70) { 'hw-good' } elseif ($cpuPct -lt 85) { 'hw-warn' } else { 'hw-crit' }
-    $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>CPU</span><span>$cpuVal%</span></div><div class='hw-bar'><div class='hw-fill $cpuClass' style='width: $cpuPct%'></div></div></div>"
-    
-    # Memory
-    $memUsedPct = if ($hw.MemUsedPct) { $hw.MemUsedPct } else { 0 }
-    $memClass = if ($memUsedPct -lt 70) { 'hw-good' } elseif ($memUsedPct -lt 85) { 'hw-warn' } else { 'hw-crit' }
-    $memLabel = "$(Show-NA $hw.MemUsedGB)/$(Show-NA $hw.MemTotalGB)GB"
-    $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>RAM</span><span>$memLabel</span></div><div class='hw-bar'><div class='hw-fill $memClass' style='width: $memUsedPct%'></div></div></div>"
-
-    # Disks (compact)
-    if ($hw.Disks -and $hw.Disks.Count -gt 0) {
-      foreach ($disk in $hw.Disks) {
-        $diskClass = if ($disk.UsedPct -lt 70) { 'hw-good' } elseif ($disk.UsedPct -lt 85) { 'hw-warn' } else { 'hw-crit' }
-        $diskLabel = "$($disk.UsedGB)/$($disk.SizeGB)GB"
-        $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>$($disk.Drive)</span><span>$diskLabel</span></div><div class='hw-bar'><div class='hw-fill $diskClass' style='width: $($disk.UsedPct)%'></div></div></div>"
-      }
-    }
-
-    $hwHtml = "<div class='hw'><div class='hw-title'>Hardware & Resources</div><div class='hw-grid'>$metricsHtml</div></div>"
-  }
-
-  @"
-<div class="dc-card">
-  <div class="dc-header">
-    <div class="dc-name">$dcName</div>
-  </div>
-  <div class="status-grid">
-    $itemsHtml
-  </div>
-  $hwHtml
-</div>
-"@
-} | Out-String
-
-# Details sections
-$detailsScript = "<script>"
-$detailBlobs | ForEach-Object {
-  $dcName = $_.DC
-  $dcSafe = $dcName -replace '[^a-zA-Z0-9]', '_'
-  
-  foreach ($test in $_.TestOutputs.GetEnumerator()) {
-    $testKey = $test.Key
-    $testOutput = ConvertTo-HtmlEncoded -Text $test.Value
-    
-    $detailsScript += @"
-
-var detail_${dcSafe}_${testKey} = ``$testOutput``;
-"@
-  }
-}
-
-$detailsScript += @"
-
-function toggleDetail(key) {
-  var container = document.getElementById('detail-container');
-  var content = document.getElementById('detail-content');
-  var title = document.getElementById('detail-title');
-  
-  var detailVar = 'detail_' + key;
-  if (typeof window[detailVar] !== 'undefined') {
-    title.textContent = key.replace(/_/g, ' > ');
-    content.textContent = window[detailVar];
-    container.classList.add('active');
-    container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }
-}
-
-function closeDetail() {
-  document.getElementById('detail-container').classList.remove('active');
-}
-</script>
-"@
-
-# ENHANCED Replication Summary Table
+# Replication Summary Table
 $replTableHtml = ""
 if ($replSummary) {
   Write-Verbose "Parsing replication summary..."
   $replLines = $replSummary -split "`r?`n"
   $replData = @()
-  
-  # Parse repadmin /replsummary output
-  # Looking for lines that contain DC names with replication stats
-  $sourceSection = $false
-  $destSection = $false
+  $sourceSection = $false; $destSection = $false
   
   foreach ($line in $replLines) {
-    # Detect section headers
-    if ($line -match 'Source DSA') { 
-      $sourceSection = $true
-      $destSection = $false
-      Write-Verbose "Found Source DSA section"
-      continue 
-    }
-    if ($line -match 'Destination DSA') { 
-      $destSection = $true
-      $sourceSection = $false
-      Write-Verbose "Found Destination DSA section"
-      continue 
-    }
+    if ($line -match 'Source DSA') { $sourceSection = $true; $destSection = $false; continue }
+    if ($line -match 'Destination DSA') { $destSection = $true; $sourceSection = $false; continue }
+    if ($line -match '^\s*$|^[-=\s]+$|largest delta|fails/total|DSA') { continue }
     
-    # Skip empty lines and headers
-    if ($line -match '^\s*$') { continue }
-    if ($line -match '^[-=\s]+$') { continue }
-    if ($line -match 'largest delta|fails/total|DSA') { continue }
-    
-    # Parse data lines - Try multiple formats
-    # Format 1: SERVERNAME   :11s   0 / 5   0
-    if ($line -match '^\s*(\S+)\s+:(\d+)s\s+(\d+)\s*/\s*(\d+)\s+(\d+)') {
-      $dcName = $matches[1]
-      $delta = $matches[2]
-      $fails = $matches[3]
-      $total = $matches[4]
-      $errorCount = $matches[5]
-      
-      $type = if ($sourceSection) { 'Source' } elseif ($destSection) { 'Destination' } else { 'Unknown' }
-      
-      Write-Verbose "Parsed: $dcName - Type: $type, Delta: ${delta}s, Fails: $fails/$total, Errors: $errorCount"
-      
+    if ($line -match '^\s*(\S+)\s+:?(\d+)s\s+(\d+)\s*/\s*(\d+)\s+(\d+)') {
       $replData += [pscustomobject]@{
-        DC = $dcName
-        Type = $type
-        LargestDelta = [int]$delta
-        Fails = [int]$fails
-        Total = [int]$total
-        Errors = [int]$errorCount
-      }
-    }
-    # Format 2: SERVERNAME   11s   0 / 5   0 (without colon)
-    elseif ($line -match '^\s*(\S+)\s+(\d+)s\s+(\d+)\s*/\s*(\d+)\s+(\d+)') {
-      $dcName = $matches[1]
-      $delta = $matches[2]
-      $fails = $matches[3]
-      $total = $matches[4]
-      $errorCount = $matches[5]
-      
-      $type = if ($sourceSection) { 'Source' } elseif ($destSection) { 'Destination' } else { 'Unknown' }
-      
-      Write-Verbose "Parsed (alt format): $dcName - Type: $type, Delta: ${delta}s, Fails: $fails/$total, Errors: $errorCount"
-      
-      $replData += [pscustomobject]@{
-        DC = $dcName
-        Type = $type
-        LargestDelta = [int]$delta
-        Fails = [int]$fails
-        Total = [int]$total
-        Errors = [int]$errorCount
+        DC = $matches[1]; Type = if ($sourceSection) { 'Source' } else { 'Destination' }
+        LargestDelta = [int]$matches[2]; Fails = [int]$matches[3]
+        Total = [int]$matches[4]; Errors = [int]$matches[5]
       }
     }
   }
   
-  Write-Verbose "Total replication entries parsed: $($replData.Count)"
-  
   if ($replData.Count -gt 0) {
-    # Group by DC to combine Source and Destination data
     $replSummaryByDC = @{}
-    
     foreach ($item in $replData) {
       if (-not $replSummaryByDC.ContainsKey($item.DC)) {
         $replSummaryByDC[$item.DC] = @{
-          DC = $item.DC
-          SourceDelta = 0
-          SourceFails = 0
-          SourceTotal = 0
-          SourceErrors = 0
-          DestDelta = 0
-          DestFails = 0
-          DestTotal = 0
-          DestErrors = 0
+          DC=$item.DC; SourceDelta=0; SourceFails=0; SourceTotal=0; SourceErrors=0
+          DestDelta=0; DestFails=0; DestTotal=0; DestErrors=0
         }
       }
-      
       if ($item.Type -eq 'Source') {
         $replSummaryByDC[$item.DC].SourceDelta = $item.LargestDelta
         $replSummaryByDC[$item.DC].SourceFails = $item.Fails
@@ -732,7 +449,6 @@ if ($replSummary) {
       $totalFails = $_.SourceFails + $_.DestFails
       $maxDelta = [Math]::Max($_.SourceDelta, $_.DestDelta)
       
-      # Status badge
       $statusBadge = if ($totalErrors -eq 0 -and $totalFails -eq 0) {
         '<span class="badge-sm badge-success">✓ HEALTHY</span>'
       } elseif ($totalErrors -gt 0) {
@@ -741,15 +457,8 @@ if ($replSummary) {
         '<span class="badge-sm badge-warning">⚠ WARN</span>'
       }
       
-      # Delta color
-      $deltaClass = if ($maxDelta -lt 60) { 'status-good' }
-                    elseif ($maxDelta -lt 300) { 'status-warn' }
-                    else { 'status-error' }
-      
-      # Error color
-      $errorClass = if ($totalErrors -gt 0) { 'status-error' } 
-                    elseif ($totalFails -gt 0) { 'status-warn' }
-                    else { 'status-good' }
+      $deltaClass = if ($maxDelta -lt 60) { 'status-good' } elseif ($maxDelta -lt 300) { 'status-warn' } else { 'status-error' }
+      $errorClass = if ($totalErrors -gt 0) { 'status-error' } elseif ($totalFails -gt 0) { 'status-warn' } else { 'status-good' }
       
       @"
 <tr>
@@ -791,14 +500,8 @@ if ($replSummary) {
 </div>
 "@
   } else {
-    # Fallback: show raw output in a formatted pre tag
     $encodedSummary = ConvertTo-HtmlEncoded -Text $replSummary
-    $replTableHtml = @"
-<div class="muted" style="margin-bottom: 12px;">Unable to parse replication summary data. Raw output below:</div>
-<div style="background: #0b1220; border: 1px solid #1f2937; border-radius: 8px; padding: 16px; overflow-x: auto;">
-  <pre style="margin: 0; max-height: none;">$encodedSummary</pre>
-</div>
-"@
+    $replTableHtml = "<div style='background: #0b1220; border: 1px solid #1f2937; border-radius: 8px; padding: 16px; overflow-x: auto;'><pre style='margin: 0; max-height: none;'>$encodedSummary</pre></div>"
   }
 }
 
@@ -807,46 +510,31 @@ $fsmoHtml = @"
   <div class="fsmo-item">
     <div style="display: flex; align-items: center;">
       <div class="fsmo-icon">SM</div>
-      <div>
-        <div class="fsmo-role">Schema Master</div>
-        <div class="fsmo-holder">$($fsmo.SchemaMaster)</div>
-      </div>
+      <div><div class="fsmo-role">Schema Master</div><div class="fsmo-holder">$($fsmo.SchemaMaster)</div></div>
     </div>
   </div>
   <div class="fsmo-item">
     <div style="display: flex; align-items: center;">
       <div class="fsmo-icon">DN</div>
-      <div>
-        <div class="fsmo-role">Domain Naming</div>
-        <div class="fsmo-holder">$($fsmo.DomainNamingMaster)</div>
-      </div>
+      <div><div class="fsmo-role">Domain Naming</div><div class="fsmo-holder">$($fsmo.DomainNamingMaster)</div></div>
     </div>
   </div>
   <div class="fsmo-item">
     <div style="display: flex; align-items: center;">
       <div class="fsmo-icon">PDC</div>
-      <div>
-        <div class="fsmo-role">PDC Emulator</div>
-        <div class="fsmo-holder">$($fsmo.PDCEmulator)</div>
-      </div>
+      <div><div class="fsmo-role">PDC Emulator</div><div class="fsmo-holder">$($fsmo.PDCEmulator)</div></div>
     </div>
   </div>
   <div class="fsmo-item">
     <div style="display: flex; align-items: center;">
       <div class="fsmo-icon">RID</div>
-      <div>
-        <div class="fsmo-role">RID Master</div>
-        <div class="fsmo-holder">$($fsmo.RIDMaster)</div>
-      </div>
+      <div><div class="fsmo-role">RID Master</div><div class="fsmo-holder">$($fsmo.RIDMaster)</div></div>
     </div>
   </div>
   <div class="fsmo-item">
     <div style="display: flex; align-items: center;">
       <div class="fsmo-icon">INF</div>
-      <div>
-        <div class="fsmo-role">Infrastructure</div>
-        <div class="fsmo-holder">$($fsmo.InfrastructureMaster)</div>
-      </div>
+      <div><div class="fsmo-role">Infrastructure</div><div class="fsmo-holder">$($fsmo.InfrastructureMaster)</div></div>
     </div>
   </div>
 </div>
@@ -887,8 +575,12 @@ $css
           <div class="metric-value">$total</div>
         </div>
         <div class="metric $(if($failCount -gt 0){'metric-alert'})">
-          <div class="metric-label">Total Failures</div>
+          <div class="metric-label">Critical Failures</div>
           <div class="metric-value" style="color: $(if($failCount -gt 0){'#fca5a5'}else{'#6ee7b7'})">$failCount</div>
+        </div>
+        <div class="metric $(if($warnCount -gt 0){'metric-warn'})">
+          <div class="metric-label">Warnings</div>
+          <div class="metric-value" style="color: $(if($warnCount -gt 0){'#fbbf24'}else{'#6ee7b7'})">$warnCount</div>
         </div>
         <div class="metric">
           <div class="metric-label">Forest Level</div>
@@ -903,7 +595,7 @@ $css
 
     <div class="card">
       <h2 class="card-title">Domain Controllers Status</h2>
-      <div class="card-subtitle">Click status items with details to expand diagnostics</div>
+      <div class="card-subtitle">Click status items with details to expand diagnostics • Hover over resource bars to see availability percentages</div>
       $dcCards
       
       <div id="detail-container" class="detail">
@@ -927,7 +619,7 @@ $css
     </div>
 
     <div class="footer">
-      AD Health Report v2.5 | ADHealthReport.ps1
+      AD Health Report v3.0 Enhanced | ADHealthReport_Enhanced.ps1
     </div>
   </div>
   
@@ -952,7 +644,7 @@ function Send-ReportViaSmtp {
 
 function Send-ReportViaGraph {
   param([string]$SenderUpn,[string[]]$To,[string]$Subject,[string]$BodyHtml,[string]$Attachment)
-  if (-not (Get-Module -ListAvailable Microsoft.Graph)) { throw "Microsoft.Graph module not found. Install with: Install-Module Microsoft.Graph" }
+  if (-not (Get-Module -ListAvailable Microsoft.Graph)) { throw "Microsoft.Graph module not found." }
   if (-not $SenderUpn) { throw "GraphSenderUpn was not provided." }
   Import-Module Microsoft.Graph -ErrorAction Stop
   if (-not (Get-MgContext)) { Connect-MgGraph -Scopes "Mail.Send" | Out-Null }
@@ -967,8 +659,7 @@ function Send-ReportViaGraph {
       attachments = @(@{
           "@odata.type" = "#microsoft.graph.fileAttachment"
           name = [IO.Path]::GetFileName($Attachment)
-          contentBytes = $b64
-          contentType = "text/html"
+          contentBytes = $b64; contentType = "text/html"
       })
     }
     saveToSentItems = $true
@@ -995,3 +686,95 @@ if ($shouldSend -and ($To -and $To.Count -gt 0)) {
 } elseif (-not $shouldSend -and $EmailOnErrorOnly) {
   Write-Host "No failures detected — email suppressed (EmailOnErrorOnly)." -ForegroundColor Yellow
 }
+ )
+  
+  $itemsHtml = $statusItems | ForEach-Object {
+    $badgeHtml = Badge $_.Value
+    $itemClass = if ($_.HasDetail) { 'status-item' } else { 'status-item-static' }
+    $onclickAttr = if ($_.HasDetail) { "onclick=`"toggleDetail('${dcSafe}_$($_.Key)')`"" } else { '' }
+    
+    @"
+    <div class="$itemClass" $onclickAttr>
+      <div class="status-label">$($_.Label)</div>
+      <div class="status-value">$badgeHtml</div>
+    </div>
+"@
+  } | Out-String
+
+  $hw = $_.Hardware
+  $hwHtml = ""
+  
+  if ($hw) {
+    $metricsHtml = ""
+    
+    $uptimeVal = Show-NA $hw.UptimeHours
+    $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>Uptime</span><span>$uptimeVal hrs</span></div></div>"
+    
+    $cpuVal = Show-NA $hw.CPUUsagePct
+    $cpuPct = if ($hw.CPUUsagePct) { $hw.CPUUsagePct } else { 0 }
+    $cpuClass = if ($cpuPct -lt 70) { 'hw-good' } elseif ($cpuPct -lt 85) { 'hw-warn' } else { 'hw-crit' }
+    $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>CPU</span><span>$cpuVal%</span></div><div class='hw-bar' title='CPU Usage: $cpuVal% | Available: $([Math]::Round(100-$cpuPct,1))%'><div class='hw-fill $cpuClass' style='width: $cpuPct%'></div></div></div>"
+    
+    $memUsedPct = if ($hw.MemUsedPct) { $hw.MemUsedPct } else { 0 }
+    $memFreePct = if ($hw.MemFreePct) { $hw.MemFreePct } else { 0 }
+    $memClass = if ($memUsedPct -lt 70) { 'hw-good' } elseif ($memUsedPct -lt 85) { 'hw-warn' } else { 'hw-crit' }
+    $memLabel = "$(Show-NA $hw.MemUsedGB)/$(Show-NA $hw.MemTotalGB)GB"
+    $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>RAM</span><span>$memLabel</span></div><div class='hw-bar' title='Memory Used: $memUsedPct% | Available: $memFreePct%'><div class='hw-fill $memClass' style='width: $memUsedPct%'></div></div></div>"
+
+    if ($hw.Disks -and $hw.Disks.Count -gt 0) {
+      foreach ($disk in $hw.Disks) {
+        $diskClass = if ($disk.UsedPct -lt 70) { 'hw-good' } elseif ($disk.UsedPct -lt 85) { 'hw-warn' } else { 'hw-crit' }
+        $diskLabel = "$($disk.UsedGB)/$($disk.SizeGB)GB"
+        $metricsHtml += "<div class='hw-item'><div class='hw-label'><span>$($disk.Drive)</span><span>$diskLabel</span></div><div class='hw-bar' title='Disk $($disk.Drive) Used: $($disk.UsedPct)% | Available: $($disk.FreePct)%'><div class='hw-fill $diskClass' style='width: $($disk.UsedPct)%'></div></div></div>"
+      }
+    }
+
+    $hwHtml = "<div class='hw'><div class='hw-title'>Hardware & Resources</div><div class='hw-grid'>$metricsHtml</div></div>"
+  }
+
+  @"
+<div class="dc-card">
+  <div class="dc-header">
+    <div class="dc-info">
+      <div class="dc-name">$dcName</div>
+      <div class="dc-ip">[$dcIP]</div>
+      $gcBadge
+    </div>
+  </div>
+  <div class="status-grid">
+    $itemsHtml
+  </div>
+  $hwHtml
+</div>
+"@
+} | Out-String
+
+# Details sections
+$detailsScript = "<script>"
+$detailBlobs | ForEach-Object {
+  $dcSafe = $_.DC -replace '[^a-zA-Z0-9]', '_'
+  foreach ($test in $_.TestOutputs.GetEnumerator()) {
+    $testOutput = ConvertTo-HtmlEncoded -Text $test.Value
+    $detailsScript += "`nvar detail_${dcSafe}_$($test.Key) = ``$testOutput``;"
+  }
+}
+
+$detailsScript += @"
+
+function toggleDetail(key) {
+  var container = document.getElementById('detail-container');
+  var content = document.getElementById('detail-content');
+  var title = document.getElementById('detail-title');
+  var detailVar = 'detail_' + key;
+  if (typeof window[detailVar] !== 'undefined') {
+    title.textContent = key.replace(/_/g, ' > ');
+    content.textContent = window[detailVar];
+    container.classList.add('active');
+    container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+function closeDetail() {
+  document.getElementById('detail-container').classList.remove('active');
+}
+</script>
+"@
