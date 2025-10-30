@@ -664,8 +664,8 @@ if ($replSummary) {
     }
     
     # Skip empty lines and headers
-    if ($line -match '^\s*) { continue }
-    if ($line -match '^[-=\s]+) { continue }
+    if ($line -match '^\s*') { continue }
+    if ($line -match '^[-=\s]+') { continue }
     if ($line -match 'largest delta|fails/total|DSA') { continue }
     
     # Parse data lines - Try multiple formats
