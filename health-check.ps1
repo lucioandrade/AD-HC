@@ -23,6 +23,27 @@ param(
 )
 
 # ===================== Utilities =====================
+# Load System.Web for HTML encoding
+Add-Type -AssemblyName System.Web -ErrorAction SilentlyContinue
+
+function ConvertTo-HtmlEncoded {
+  param([string]$Text)
+  if ([string]::IsNullOrEmpty($Text)) { return "" }
+  
+  # Try System.Web.HttpUtility first
+  if ([System.Web.HttpUtility] -as [Type]) {
+    return [System.Web.HttpUtility]::HtmlEncode($Text)
+  }
+  
+  # Fallback to manual encoding
+  $Text = $Text -replace '&', '&amp;'
+  $Text = $Text -replace '<', '&lt;'
+  $Text = $Text -replace '>', '&gt;'
+  $Text = $Text -replace '"', '&quot;'
+  $Text = $Text -replace "'", '&#39;'
+  return $Text
+}
+
 function Test-Tool {
   param([string]$Name)
   return Get-Command $Name -ErrorAction SilentlyContinue
@@ -585,7 +606,7 @@ $detailBlobs | ForEach-Object {
   
   foreach ($test in $_.TestOutputs.GetEnumerator()) {
     $testKey = $test.Key
-    $testOutput = [System.Web.HttpUtility]::HtmlEncode($test.Value)
+    $testOutput = ConvertTo-HtmlEncoded -Text $test.Value
     
     $detailsScript += @"
 
@@ -619,7 +640,8 @@ function closeDetail() {
 # ENHANCED Replication Summary Table
 $replTableHtml = ""
 if ($replSummary) {
-  $replLines = $replSummary -split "`n"
+  Write-Verbose "Parsing replication summary..."
+  $replLines = $replSummary -split "`r?`n"
   $replData = @()
   
   # Parse repadmin /replsummary output
@@ -629,23 +651,36 @@ if ($replSummary) {
   
   foreach ($line in $replLines) {
     # Detect section headers
-    if ($line -match 'Source DSA') { $sourceSection = $true; $destSection = $false; continue }
-    if ($line -match 'Destination DSA') { $destSection = $true; $sourceSection = $false; continue }
+    if ($line -match 'Source DSA') { 
+      $sourceSection = $true
+      $destSection = $false
+      Write-Verbose "Found Source DSA section"
+      continue 
+    }
+    if ($line -match 'Destination DSA') { 
+      $destSection = $true
+      $sourceSection = $false
+      Write-Verbose "Found Destination DSA section"
+      continue 
+    }
     
     # Skip empty lines and headers
     if ($line -match '^\s*$') { continue }
     if ($line -match '^[-=\s]+$') { continue }
-    if ($line -match 'largest delta|fails/total') { continue }
+    if ($line -match 'largest delta|fails/total|DSA') { continue }
     
-    # Parse data lines - format: SERVERNAME   :11s   0 / 5   0
+    # Parse data lines - Try multiple formats
+    # Format 1: SERVERNAME   :11s   0 / 5   0
     if ($line -match '^\s*(\S+)\s+:(\d+)s\s+(\d+)\s*/\s*(\d+)\s+(\d+)') {
       $dcName = $matches[1]
       $delta = $matches[2]
       $fails = $matches[3]
       $total = $matches[4]
-      $error = $matches[5]
+      $errorCount = $matches[5]
       
       $type = if ($sourceSection) { 'Source' } elseif ($destSection) { 'Destination' } else { 'Unknown' }
+      
+      Write-Verbose "Parsed: $dcName - Type: $type, Delta: ${delta}s, Fails: $fails/$total, Errors: $errorCount"
       
       $replData += [pscustomobject]@{
         DC = $dcName
@@ -653,10 +688,33 @@ if ($replSummary) {
         LargestDelta = [int]$delta
         Fails = [int]$fails
         Total = [int]$total
-        Errors = [int]$error
+        Errors = [int]$errorCount
+      }
+    }
+    # Format 2: SERVERNAME   11s   0 / 5   0 (without colon)
+    elseif ($line -match '^\s*(\S+)\s+(\d+)s\s+(\d+)\s*/\s*(\d+)\s+(\d+)') {
+      $dcName = $matches[1]
+      $delta = $matches[2]
+      $fails = $matches[3]
+      $total = $matches[4]
+      $errorCount = $matches[5]
+      
+      $type = if ($sourceSection) { 'Source' } elseif ($destSection) { 'Destination' } else { 'Unknown' }
+      
+      Write-Verbose "Parsed (alt format): $dcName - Type: $type, Delta: ${delta}s, Fails: $fails/$total, Errors: $errorCount"
+      
+      $replData += [pscustomobject]@{
+        DC = $dcName
+        Type = $type
+        LargestDelta = [int]$delta
+        Fails = [int]$fails
+        Total = [int]$total
+        Errors = [int]$errorCount
       }
     }
   }
+  
+  Write-Verbose "Total replication entries parsed: $($replData.Count)"
   
   if ($replData.Count -gt 0) {
     # Group by DC to combine Source and Destination data
@@ -755,10 +813,11 @@ if ($replSummary) {
 "@
   } else {
     # Fallback: show raw output in a formatted pre tag
+    $encodedSummary = ConvertTo-HtmlEncoded -Text $replSummary
     $replTableHtml = @"
 <div class="muted" style="margin-bottom: 12px;">Unable to parse replication summary data. Raw output below:</div>
 <div style="background: #0b1220; border: 1px solid #1f2937; border-radius: 8px; padding: 16px; overflow-x: auto;">
-  <pre style="margin: 0; max-height: none;">$([System.Web.HttpUtility]::HtmlEncode($replSummary))</pre>
+  <pre style="margin: 0; max-height: none;">$encodedSummary</pre>
 </div>
 "@
   }
