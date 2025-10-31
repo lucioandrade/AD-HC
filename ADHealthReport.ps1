@@ -26,7 +26,7 @@ param(
 )
 
 # ===================== CONSTANTS =====================
-$SCRIPT_VERSION = "4.5 Enterprise"
+$SCRIPT_VERSION = "2.1"
 $CRITICAL_EVENT_IDS = @{
   1864 = 'Disk space critical for AD logs'
   2042 = 'Replication has not occurred for extended period'
@@ -1332,7 +1332,7 @@ $css
   </div>
   
   <div class="footer">
-    AD Health Check Report v$SCRIPT_VERSION | Powered by PowerShell
+    AD Health Check Report v$SCRIPT_VERSION | Powered by PowerShell | LA
   </div>
   
 </div>
