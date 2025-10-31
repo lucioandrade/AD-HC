@@ -26,7 +26,7 @@ param(
 )
 
 # ===================== CONSTANTS =====================
-$SCRIPT_VERSION = "2.1"
+$SCRIPT_VERSION = "2.4"
 $CRITICAL_EVENT_IDS = @{
   1864 = 'Disk space critical for AD logs'
   2042 = 'Replication has not occurred for extended period'
@@ -87,14 +87,25 @@ function Get-HealthScore {
   param(
     [int]$CriticalCount,
     [int]$WarningCount,
-    [int]$TotalChecks
+    [int]$OkCount,
+    [int]$UnknownCount
   )
   
-  $score = 100
-  $score -= ($CriticalCount * 15)  # Each critical = -15 points
-  $score -= ($WarningCount * 5)    # Each warning = -5 points
+  $totalChecks = $CriticalCount + $WarningCount + $OkCount + $UnknownCount
   
-  return [Math]::Max(0, [Math]::Min(100, $score))
+  if ($totalChecks -eq 0) { return 100 }
+  
+  # Calculate success rate
+  $successRate = ($OkCount / $totalChecks) * 100
+  
+  # Apply penalties for issues
+  $criticalPenalty = ($CriticalCount / $totalChecks) * 30  # Each critical can reduce up to 30 points proportionally
+  $warningPenalty = ($WarningCount / $totalChecks) * 10   # Each warning can reduce up to 10 points proportionally
+  $unknownPenalty = ($UnknownCount / $totalChecks) * 5    # Each unknown reduces up to 5 points proportionally
+  
+  $score = $successRate - $criticalPenalty - $warningPenalty - $unknownPenalty
+  
+  return [Math]::Max(0, [Math]::Min(100, [Math]::Round($score, 0)))
 }
 
 function Get-SeverityLevel {
@@ -128,6 +139,12 @@ function Format-Uptime {
     else { return "$days days $remainingHours hrs" }
   }
   return "$([Math]::Round($Hours, 1)) hrs"
+}
+
+function Escape-HtmlAttribute {
+  param([string]$Text)
+  if ([string]::IsNullOrEmpty($Text)) { return "" }
+  return $Text.Replace('"', '&quot;').Replace("'", '&#39;').Replace('<', '&lt;').Replace('>', '&gt;').Replace('`', '&#96;').Replace('\', '\\')
 }
 
 # ===================== PRE-FLIGHT CHECKS =====================
@@ -198,7 +215,9 @@ function Add-ValidationResult {
     [string]$Category,
     [string]$CheckName,
     [string]$Status,  # OK, WARNING, CRITICAL, UNKNOWN
-    [string]$Details
+    [string]$Details,
+    [string]$TestCommand = "",
+    [string]$TestOutput = ""
   )
   
   $result = [PSCustomObject]@{
@@ -207,6 +226,8 @@ function Add-ValidationResult {
     CheckName = $CheckName
     Status = $Status
     Details = $Details
+    TestCommand = $TestCommand
+    TestOutput = $TestOutput
     Timestamp = Get-Date
   }
   
@@ -278,11 +299,20 @@ function Test-DCHealth {
   
   # Basic connectivity
   Write-Log "Testing connectivity to $DCName..." -Level "INFO"
-  $dcHealth.Reachable = Test-Connection -ComputerName $DCName -Count 1 -Quiet -ErrorAction SilentlyContinue
+  $pingResult = Test-Connection -ComputerName $DCName -Count 1 -ErrorAction SilentlyContinue
+  $dcHealth.Reachable = $null -ne $pingResult
+  
+  $pingCmd = "Test-Connection -ComputerName $DCName -Count 1"
+  $pingOutput = if ($dcHealth.Reachable) { 
+    "Success: Reply from $($pingResult.IPV4Address) in $($pingResult.ResponseTime)ms" 
+  } else { 
+    "Failed: No response from $DCName" 
+  }
   
   Add-ValidationResult -DC $DCName -Category "Connectivity" -CheckName "Ping" `
     -Status $(if ($dcHealth.Reachable) { "OK" } else { "CRITICAL" }) `
-    -Details $(if ($dcHealth.Reachable) { "DC is reachable via ICMP" } else { "DC did not respond to ping" })
+    -Details $(if ($dcHealth.Reachable) { "DC is reachable via ICMP" } else { "DC did not respond to ping" }) `
+    -TestCommand $pingCmd -TestOutput $pingOutput
   
   if (-not $dcHealth.Reachable) {
     Add-Issue -Severity 'Critical' -Category 'Connectivity' -DC $DCName `
@@ -305,13 +335,19 @@ function Test-DCHealth {
     $dcHealth.IsGC = $dcInfo.IsGlobalCatalog
     $dcHealth.IsPDC = ($dcInfo.HostName -eq $pdcEmulator)
     
+    $adCmd = "Get-ADDomainController -Identity $DCName"
+    $adOutput = "Success: IP=$($dcHealth.IP), GlobalCatalog=$($dcHealth.IsGC), PDC=$($dcHealth.IsPDC), Site=$($dcInfo.Site)"
+    
     Add-ValidationResult -DC $DCName -Category "Configuration" -CheckName "AD DC Object" `
       -Status "OK" `
-      -Details "DC Info: IP=$($dcHealth.IP), GlobalCatalog=$($dcHealth.IsGC), PDC=$($dcHealth.IsPDC)"
+      -Details "DC Info: IP=$($dcHealth.IP), GlobalCatalog=$($dcHealth.IsGC), PDC=$($dcHealth.IsPDC)" `
+      -TestCommand $adCmd -TestOutput $adOutput
   } catch {
     Add-ValidationResult -DC $DCName -Category "Configuration" -CheckName "AD DC Object" `
       -Status "WARNING" `
-      -Details "Unable to retrieve DC information: $($_.Exception.Message)"
+      -Details "Unable to retrieve DC information: $($_.Exception.Message)" `
+      -TestCommand "Get-ADDomainController -Identity $DCName" `
+      -TestOutput "Error: $($_.Exception.Message)"
     
     Add-Issue -Severity 'Warning' -Category 'Configuration' -DC $DCName `
       -Title 'Unable to retrieve DC information' `
@@ -336,9 +372,13 @@ function Test-DCHealth {
       }
     }
     
+    $uptimeCmd = "Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $DCName"
+    $uptimeOutput = "LastBootUpTime: $($os.LastBootUpTime), Current Uptime: $(Format-Uptime -Hours $dcHealth.UptimeHours)"
+    
     Add-ValidationResult -DC $DCName -Category "Hardware" -CheckName "System Uptime" `
       -Status "OK" `
-      -Details "Uptime: $(Format-Uptime -Hours $dcHealth.UptimeHours)"
+      -Details "Uptime: $(Format-Uptime -Hours $dcHealth.UptimeHours)" `
+      -TestCommand $uptimeCmd -TestOutput $uptimeOutput
     
     # Memory
     if ($os.TotalVisibleMemorySize -and $os.FreePhysicalMemory) {
@@ -351,9 +391,13 @@ function Test-DCHealth {
                    elseif ($dcHealth.MemoryUsedPct -gt 80) { "WARNING" } 
                    else { "OK" }
       
+      $memCmd = "Get-CimInstance Win32_OperatingSystem | Select TotalVisibleMemorySize, FreePhysicalMemory"
+      $memOutput = "Total: $memTotalGB GB, Used: $memUsedGB GB, Free: $memFreeGB GB, Usage: $($dcHealth.MemoryUsedPct)%"
+      
       Add-ValidationResult -DC $DCName -Category "Hardware" -CheckName "Memory Usage" `
         -Status $memStatus `
-        -Details "RAM: $memUsedGB GB / $memTotalGB GB ($($dcHealth.MemoryUsedPct)% used)"
+        -Details "RAM: $memUsedGB GB / $memTotalGB GB ($($dcHealth.MemoryUsedPct)% used)" `
+        -TestCommand $memCmd -TestOutput $memOutput
       
       if ($dcHealth.MemoryUsedPct -gt 90) {
         Add-Issue -Severity 'Critical' -Category 'Hardware' -DC $DCName `
@@ -380,9 +424,13 @@ function Test-DCHealth {
                       elseif ($freePct -lt 20) { "WARNING" }
                       else { "OK" }
         
+        $diskCmd = "Get-CimInstance Win32_LogicalDisk -Filter `"DriveType=3`" -ComputerName $DCName"
+        $diskOutput = "Drive $($disk.DeviceID): Total=$sizeGB GB, Free=$freeGB GB ($freePct% free)"
+        
         Add-ValidationResult -DC $DCName -Category "Hardware" -CheckName "Disk $($disk.DeviceID)" `
           -Status $diskStatus `
-          -Details "Size: $sizeGB GB, Free: $freeGB GB ($freePct% free)"
+          -Details "Size: $sizeGB GB, Free: $freeGB GB ($freePct% free)" `
+          -TestCommand $diskCmd -TestOutput $diskOutput
         
         if ($freePct -lt 10) {
           Add-Issue -Severity 'Critical' -Category 'Hardware' -DC $DCName `
@@ -399,52 +447,79 @@ function Test-DCHealth {
     } catch {
       Add-ValidationResult -DC $DCName -Category "Hardware" -CheckName "Disk Space" `
         -Status "UNKNOWN" `
-        -Details "Unable to check disk space"
+        -Details "Unable to check disk space" `
+        -TestCommand "Get-CimInstance Win32_LogicalDisk -ComputerName $DCName" `
+        -TestOutput "Error: $($_.Exception.Message)"
     }
     
   } catch {
     Add-ValidationResult -DC $DCName -Category "Hardware" -CheckName "Hardware Info" `
       -Status "UNKNOWN" `
-      -Details "Unable to retrieve hardware information: $($_.Exception.Message)"
+      -Details "Unable to retrieve hardware information: $($_.Exception.Message)" `
+      -TestCommand "Get-CimInstance Win32_OperatingSystem -ComputerName $DCName" `
+      -TestOutput "Error: $($_.Exception.Message)"
     Write-Log "Unable to get hardware info for $DCName : $_" -Level "WARNING"
   }
   
-  # CPU Usage - CRITICAL: Separate and independent measurement with 10 second delay
-  Write-Log "Measuring CPU usage for $DCName (this takes 10 seconds)..." -Level "INFO"
+  # CPU Usage - Continuous monitoring over 5 seconds
+  Write-Log "Measuring CPU usage for $DCName (monitoring for 5 seconds)..." -Level "INFO"
   $cpuMeasured = $false
+  $cpuSamples = @()
+  
   try {
-    # First sample
-    $cpu1 = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -ComputerName $DCName -Filter "Name='_Total'" -ErrorAction Stop
+    $cpuCounter = "\\$DCName\Processor(_Total)\% Processor Time"
+    $sampleCount = 10  # 10 samples over 5 seconds = 1 sample every 500ms
+    $intervalMs = 500
     
-    if ($cpu1 -and $cpu1.PercentProcessorTime -ne $null) {
-      Write-Log "First CPU sample for $DCName obtained, waiting 10 seconds..." -Level "INFO"
-      Start-Sleep -Seconds 10
-      
-      # Second sample
-      $cpu2 = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -ComputerName $DCName -Filter "Name='_Total'" -ErrorAction Stop
-      
-      if ($cpu2 -and $cpu2.PercentProcessorTime -ne $null) {
-        $dcHealth.CPUUsage = [Math]::Round([double]$cpu2.PercentProcessorTime, 1)
-        $cpuMeasured = $true
-        Write-Log "CPU usage for $DCName : $($dcHealth.CPUUsage)%" -Level "INFO"
+    Write-Log "Collecting $sampleCount CPU samples from $DCName..." -Level "INFO"
+    
+    for ($i = 0; $i -lt $sampleCount; $i++) {
+      try {
+        $sample = (Get-Counter -Counter $cpuCounter -ErrorAction Stop).CounterSamples[0].CookedValue
+        $cpuSamples += $sample
+        Write-Log "  Sample $($i+1)/$sampleCount : $([Math]::Round($sample, 1))%" -Level "INFO"
         
-        $cpuStatus = if ($dcHealth.CPUUsage -gt 85) { "WARNING" } else { "OK" }
-        
-        Add-ValidationResult -DC $DCName -Category "Hardware" -CheckName "CPU Usage" `
-          -Status $cpuStatus `
-          -Details "CPU: $($dcHealth.CPUUsage)%"
-        
-        if ($dcHealth.CPUUsage -gt 85) {
-          Add-Issue -Severity 'Warning' -Category 'Hardware' -DC $DCName `
-            -Title "CPU usage high ($($dcHealth.CPUUsage)%)" `
-            -Description "CPU usage is at $($dcHealth.CPUUsage)% - may impact performance" `
-            -Recommendation 'Investigate high CPU processes and consider load balancing' -GroupByCategory
+        if ($i -lt ($sampleCount - 1)) {
+          Start-Sleep -Milliseconds $intervalMs
         }
-      } else {
-        Write-Log "Second CPU sample for $DCName returned null" -Level "WARNING"
+      } catch {
+        Write-Log "  Failed to collect sample $($i+1): $($_.Exception.Message)" -Level "WARNING"
+      }
+    }
+    
+    if ($cpuSamples.Count -gt 0) {
+      # Calculate statistics
+      $cpuAvg = ($cpuSamples | Measure-Object -Average).Average
+      $cpuMin = ($cpuSamples | Measure-Object -Minimum).Minimum
+      $cpuMax = ($cpuSamples | Measure-Object -Maximum).Maximum
+      
+      $dcHealth.CPUUsage = [Math]::Round($cpuAvg, 1)
+      $cpuMeasured = $true
+      
+      Write-Log "CPU usage for $DCName - Average: $($dcHealth.CPUUsage)%, Min: $([Math]::Round($cpuMin, 1))%, Max: $([Math]::Round($cpuMax, 1))%" -Level "INFO"
+      
+      $cpuStatus = if ($dcHealth.CPUUsage -gt 85) { "WARNING" } else { "OK" }
+      
+      $cpuCmd = "Get-Counter '\\$DCName\Processor(_Total)\% Processor Time' (monitored for 5 seconds, $sampleCount samples)"
+      $cpuOutput = "Samples collected: $($cpuSamples.Count)`n" +
+                   "Average CPU: $($dcHealth.CPUUsage)%`n" +
+                   "Minimum CPU: $([Math]::Round($cpuMin, 1))%`n" +
+                   "Maximum CPU: $([Math]::Round($cpuMax, 1))%`n" +
+                   "Sample values: " + (($cpuSamples | ForEach-Object { [Math]::Round($_, 1) }) -join '%, ') + '%'
+      
+      Add-ValidationResult -DC $DCName -Category "Hardware" -CheckName "CPU Usage" `
+        -Status $cpuStatus `
+        -Details "CPU: $($dcHealth.CPUUsage)% (avg over 5 seconds)" `
+        -TestCommand $cpuCmd -TestOutput $cpuOutput
+      
+      if ($dcHealth.CPUUsage -gt 85) {
+        Add-Issue -Severity 'Warning' -Category 'Hardware' -DC $DCName `
+          -Title "CPU usage high ($($dcHealth.CPUUsage)%)" `
+          -Description "CPU usage is at $($dcHealth.CPUUsage)% - may impact performance" `
+          -Recommendation 'Investigate high CPU processes and consider load balancing' -GroupByCategory
       }
     } else {
-      Write-Log "First CPU sample for $DCName returned null" -Level "WARNING"
+      Write-Log "No CPU samples collected for $DCName" -Level "WARNING"
     }
   } catch {
     Write-Log "Exception measuring CPU for $DCName : $($_.Exception.Message)" -Level "WARNING"
@@ -454,7 +529,9 @@ function Test-DCHealth {
     Write-Log "CPU measurement failed for $DCName, marking as UNKNOWN" -Level "WARNING"
     Add-ValidationResult -DC $DCName -Category "Hardware" -CheckName "CPU Usage" `
       -Status "UNKNOWN" `
-      -Details "Unable to measure CPU usage"
+      -Details "Unable to measure CPU usage" `
+      -TestCommand "Get-Counter '\\$DCName\Processor(_Total)\% Processor Time'" `
+      -TestOutput "Error: Unable to collect performance counter data"
   }
   
   # Critical Services Check
@@ -466,9 +543,13 @@ function Test-DCHealth {
       $isRunning = ($svc.Status -eq 'Running')
       $dcHealth.CriticalServices[$svcName] = $isRunning
       
+      $svcCmd = "Get-Service -ComputerName $DCName -Name $svcName"
+      $svcOutput = "Service: $svcName, Status: $($svc.Status), StartType: $($svc.StartType)"
+      
       Add-ValidationResult -DC $DCName -Category "Services" -CheckName "$svcName Service" `
         -Status $(if ($isRunning) { "OK" } else { "CRITICAL" }) `
-        -Details "Service status: $($svc.Status)"
+        -Details "Service status: $($svc.Status)" `
+        -TestCommand $svcCmd -TestOutput $svcOutput
       
       if (-not $isRunning) {
         Add-Issue -Severity 'Critical' -Category 'Services' -DC $DCName `
@@ -481,7 +562,9 @@ function Test-DCHealth {
       
       Add-ValidationResult -DC $DCName -Category "Services" -CheckName "$svcName Service" `
         -Status "CRITICAL" `
-        -Details "Unable to query service: $($_.Exception.Message)"
+        -Details "Unable to query service: $($_.Exception.Message)" `
+        -TestCommand "Get-Service -ComputerName $DCName -Name $svcName" `
+        -TestOutput "Error: $($_.Exception.Message)"
       
       Add-Issue -Severity 'Critical' -Category 'Services' -DC $DCName `
         -Title "Unable to query $svcName service" `
@@ -510,9 +593,12 @@ function Test-DCHealth {
       
       $dcdiagStatus = if ($testPassed) { "OK" } else { "CRITICAL" }
       
+      $dcdiagCmd = "dcdiag /s:$DCName /test:$testName"
+      
       Add-ValidationResult -DC $DCName -Category "DCDiag" -CheckName $testName `
         -Status $dcdiagStatus `
-        -Details $(if ($testPassed) { "Test passed successfully" } else { "Test failed - check dcdiag output" })
+        -Details $(if ($testPassed) { "Test passed successfully" } else { "Test failed - check dcdiag output" }) `
+        -TestCommand $dcdiagCmd -TestOutput $outputText
       
       if (-not $testPassed) {
         Add-Issue -Severity 'Critical' -Category 'DCDiag' -DC $DCName `
@@ -524,7 +610,9 @@ function Test-DCHealth {
       $dcHealth.DCDiagResults[$testName] = "ERROR"
       Add-ValidationResult -DC $DCName -Category "DCDiag" -CheckName $testName `
         -Status "UNKNOWN" `
-        -Details "Unable to run test: $($_.Exception.Message)"
+        -Details "Unable to run test: $($_.Exception.Message)" `
+        -TestCommand "dcdiag /s:$DCName /test:$testName" `
+        -TestOutput "Error: $($_.Exception.Message)"
     }
   }
   
@@ -537,12 +625,22 @@ function Test-DCHealth {
       ($_.'Last Failure Status' -and $_.'Last Failure Status' -ne '0')
     }
     
+    $replCmd = "repadmin /showrepl $DCName /csv"
+    $replOutputText = if ($replErrors) {
+      "Replication issues found:`n" + ($replErrors | ForEach-Object { 
+        "Source: $($_.'Source DSA'), NC: $($_.'Naming Context'), Failures: $($_.'Number of Failures'), Last Result: $($_.'Last Failure Status')" 
+      } | Out-String)
+    } else {
+      "All replication partners healthy. Total partners: $($replResult.Count)"
+    }
+    
     if ($replErrors) {
       $dcHealth.ReplicationStatus = 'ERROR'
       
       Add-ValidationResult -DC $DCName -Category "Replication" -CheckName "AD Replication" `
         -Status "CRITICAL" `
-        -Details "Replication errors detected: $($replErrors.Count) partners failing"
+        -Details "Replication errors detected: $($replErrors.Count) partners failing" `
+        -TestCommand $replCmd -TestOutput $replOutputText
       
       Add-Issue -Severity 'Critical' -Category 'Replication' -DC $DCName `
         -Title 'AD Replication Failures Detected' `
@@ -553,14 +651,17 @@ function Test-DCHealth {
       
       Add-ValidationResult -DC $DCName -Category "Replication" -CheckName "AD Replication" `
         -Status "OK" `
-        -Details "All replication partners are healthy"
+        -Details "All replication partners are healthy" `
+        -TestCommand $replCmd -TestOutput $replOutputText
     }
   } catch {
     $dcHealth.ReplicationStatus = 'Unknown'
     
     Add-ValidationResult -DC $DCName -Category "Replication" -CheckName "AD Replication" `
       -Status "UNKNOWN" `
-      -Details "Unable to check replication status"
+      -Details "Unable to check replication status" `
+      -TestCommand "repadmin /showrepl $DCName /csv" `
+      -TestOutput "Error: $($_.Exception.Message)"
     
     Write-Log "Unable to check replication for $DCName : $_" -Level "WARNING"
   }
@@ -569,6 +670,8 @@ function Test-DCHealth {
   Write-Log "Checking time sync for $DCName..." -Level "INFO"
   try {
     $w32tmResult = & w32tm /stripchart /computer:$DCName /samples:1 /dataonly 2>&1
+    $w32tmOutput = $w32tmResult -join "`n"
+    
     if ($w32tmResult -match '([\+\-]?\d+\.\d+)s') {
       $offset = [Math]::Abs([double]$matches[1])
       $dcHealth.TimeSyncOffset = $offset
@@ -577,9 +680,12 @@ function Test-DCHealth {
                     elseif ($offset -gt 1) { "WARNING" }
                     else { "OK" }
       
+      $timeCmd = "w32tm /stripchart /computer:$DCName /samples:1 /dataonly"
+      
       Add-ValidationResult -DC $DCName -Category "Time Sync" -CheckName "NTP Synchronization" `
         -Status $timeStatus `
-        -Details "Time offset: ${offset}s"
+        -Details "Time offset: ${offset}s" `
+        -TestCommand $timeCmd -TestOutput $w32tmOutput
       
       if ($offset -gt 5) {
         Add-Issue -Severity 'Critical' -Category 'Time' -DC $DCName `
@@ -596,7 +702,9 @@ function Test-DCHealth {
   } catch {
     Add-ValidationResult -DC $DCName -Category "Time Sync" -CheckName "NTP Synchronization" `
       -Status "UNKNOWN" `
-      -Details "Unable to check time synchronization"
+      -Details "Unable to check time synchronization" `
+      -TestCommand "w32tm /stripchart /computer:$DCName /samples:1 /dataonly" `
+      -TestOutput "Error: $($_.Exception.Message)"
     Write-Log "Unable to check time sync for $DCName" -Level "INFO"
   }
   
@@ -604,24 +712,43 @@ function Test-DCHealth {
   Write-Log "Checking critical events for $DCName..." -Level "INFO"
   try {
     $startTime = (Get-Date).AddHours(-24)
-    $criticalEvents = Get-WinEvent -ComputerName $DCName -FilterHashtable @{
-      LogName = 'Directory Service', 'System', 'DFS Replication'
-      Level = 1, 2
-      StartTime = $startTime
-      ID = $CRITICAL_EVENT_IDS.Keys
-    } -ErrorAction SilentlyContinue
+    $eventLogNames = @('Directory Service', 'System', 'DFS Replication')
+    $criticalEvents = @()
     
-    if ($criticalEvents) {
+    $eventCmd = "Get-WinEvent -ComputerName $DCName -FilterHashtable @{LogName='Directory Service','System','DFS Replication'; Level=1,2; StartTime='$startTime'}"
+    $eventOutputList = @()
+    
+    foreach ($logName in $eventLogNames) {
+      try {
+        $events = Get-WinEvent -ComputerName $DCName -FilterHashtable @{
+          LogName = $logName
+          Level = 1, 2
+          StartTime = $startTime
+        } -ErrorAction SilentlyContinue
+        
+        if ($events) {
+          $criticalEvents += $events | Where-Object { $CRITICAL_EVENT_IDS.Keys -contains $_.Id }
+        }
+      } catch {
+        Write-Log "Unable to query $logName log on $DCName" -Level "INFO"
+      }
+    }
+    
+    if ($criticalEvents -and $criticalEvents.Count -gt 0) {
       $dcHealth.EventsCritical = $criticalEvents.Count
       $eventGroups = $criticalEvents | Group-Object -Property Id
       $eventSummary = @()
       foreach ($group in $eventGroups) {
         $eventSummary += "$($group.Count)x Event $($group.Name)"
+        $eventOutputList += "Event ID $($group.Name): $($group.Count) occurrences - $($CRITICAL_EVENT_IDS[$group.Name])"
       }
+      
+      $eventOutput = ($eventOutputList -join "`n")
       
       Add-ValidationResult -DC $DCName -Category "Events" -CheckName "Critical Events (24h)" `
         -Status "WARNING" `
-        -Details "$($criticalEvents.Count) critical events found: $($eventSummary -join ', ')"
+        -Details "$($criticalEvents.Count) critical events found: $($eventSummary -join ', ')" `
+        -TestCommand $eventCmd -TestOutput $eventOutput
       
       Add-Issue -Severity 'Warning' -Category 'Events' -DC $DCName `
         -Title "$($criticalEvents.Count) critical events in last 24h" `
@@ -630,12 +757,15 @@ function Test-DCHealth {
     } else {
       Add-ValidationResult -DC $DCName -Category "Events" -CheckName "Critical Events (24h)" `
         -Status "OK" `
-        -Details "No critical events found in the last 24 hours"
+        -Details "No critical events found in the last 24 hours" `
+        -TestCommand $eventCmd -TestOutput "No critical events found matching the specified criteria in the last 24 hours"
     }
   } catch {
     Add-ValidationResult -DC $DCName -Category "Events" -CheckName "Critical Events (24h)" `
       -Status "UNKNOWN" `
-      -Details "Unable to check event logs"
+      -Details "Unable to check event logs: $($_.Exception.Message)" `
+      -TestCommand $eventCmd -TestOutput "Error: $($_.Exception.Message)"
+    Write-Log "Unable to check events for $DCName : $($_.Exception.Message)" -Level "WARNING"
   }
   
   # Certificate Expiration Check
@@ -646,6 +776,8 @@ function Test-DCHealth {
       Where-Object { $_.HasPrivateKey -and $_.NotAfter -lt (Get-Date).AddDays($args[0]) }
     } -ArgumentList $CertWarningDays -ErrorAction Stop
     
+    $certCmd = "Invoke-Command -ComputerName $DCName { Get-ChildItem Cert:\LocalMachine\My | Where HasPrivateKey }"
+    
     if ($certs) {
       $expiredCerts = @($certs | Where-Object { $_.NotAfter -lt (Get-Date) })
       $expiringSoon = @($certs | Where-Object { $_.NotAfter -ge (Get-Date) })
@@ -654,17 +786,21 @@ function Test-DCHealth {
       $dcHealth.CertificatesExpiring = $expiringSoon.Count
       
       $certDetails = @()
+      $certOutputList = @()
       foreach ($cert in $certs) {
         $daysLeft = ($cert.NotAfter - (Get-Date)).Days
         $status = if ($daysLeft -lt 0) { "EXPIRED $([Math]::Abs($daysLeft)) days ago" } else { "expires in $daysLeft days" }
         $certDetails += "• Subject: $($cert.Subject)`n  Issuer: $($cert.Issuer)`n  Status: $status`n  Expiry: $($cert.NotAfter.ToString('yyyy-MM-dd'))"
+        $certOutputList += "Subject: $($cert.Subject), Thumbprint: $($cert.Thumbprint), NotAfter: $($cert.NotAfter), Status: $status"
       }
       
       $certStatus = if ($expiredCerts.Count -gt 0) { "CRITICAL" } else { "WARNING" }
+      $certOutput = ($certOutputList -join "`n")
       
       Add-ValidationResult -DC $DCName -Category "Certificates" -CheckName "Certificate Expiration" `
         -Status $certStatus `
-        -Details "Expired: $($expiredCerts.Count), Expiring soon: $($expiringSoon.Count)"
+        -Details "Expired: $($expiredCerts.Count), Expiring soon: $($expiringSoon.Count)" `
+        -TestCommand $certCmd -TestOutput $certOutput
       
       if ($expiredCerts.Count -gt 0) {
         Add-Issue -Severity 'Critical' -Category 'Certificates' -DC $DCName `
@@ -680,12 +816,14 @@ function Test-DCHealth {
     } else {
       Add-ValidationResult -DC $DCName -Category "Certificates" -CheckName "Certificate Expiration" `
         -Status "OK" `
-        -Details "All certificates are valid and not expiring soon"
+        -Details "All certificates are valid and not expiring soon" `
+        -TestCommand $certCmd -TestOutput "All certificates in LocalMachine\My are valid and not expiring within $CertWarningDays days"
     }
   } catch {
     Add-ValidationResult -DC $DCName -Category "Certificates" -CheckName "Certificate Expiration" `
       -Status "UNKNOWN" `
-      -Details "Unable to check certificates"
+      -Details "Unable to check certificates" `
+      -TestCommand $certCmd -TestOutput "Error: $($_.Exception.Message)"
     Write-Log "Unable to check certificates for $DCName : $_" -Level "INFO"
   }
   
@@ -712,9 +850,13 @@ function Test-FSMORoles {
     
     $fsmoStatus = if ($reachable) { "OK" } else { "CRITICAL" }
     
+    $fsmoCmd = "Test-Connection -ComputerName $holder -Count 1"
+    $fsmoOutput = if ($reachable) { "Role holder $holder is reachable and operational" } else { "Role holder $holder is NOT reachable" }
+    
     Add-ValidationResult -DC "Domain-Wide" -Category "FSMO Roles" -CheckName $role.Key `
       -Status $fsmoStatus `
-      -Details $(if ($reachable) { "Role holder is reachable" } else { "Role holder is UNREACHABLE" })
+      -Details $(if ($reachable) { "Role holder is reachable" } else { "Role holder is UNREACHABLE" }) `
+      -TestCommand $fsmoCmd -TestOutput $fsmoOutput
     
     if (-not $reachable) {
       Add-Issue -Severity 'Critical' -Category 'FSMO' -DC $holder `
@@ -733,36 +875,57 @@ function Test-RIDPool {
   try {
     $ridMaster = $domain.RIDMaster
     $dcdiagRid = & dcdiag /test:ridmanager /s:$ridMaster /v 2>&1
+    $ridOutput = $dcdiagRid -join "`n"
     
-    if ($dcdiagRid -match 'Available RID Pool.*?(\d+)') {
-      $availableRids = [int]$matches[1]
+    # Parse the "Available RID Pool for the Domain" line
+    # Example: * Available RID Pool for the Domain is 2600 to 1073741823
+    if ($ridOutput -match '\*\s+Available RID Pool for the Domain is\s+(\d+)\s+to\s+(\d+)') {
+      $ridStart = [int]$matches[1]
+      $ridEnd = [int]$matches[2]
+      $availableRids = $ridEnd - $ridStart + 1
       
-      $ridStatus = if ($availableRids -lt 5000) { "CRITICAL" }
-                   elseif ($availableRids -lt 10000) { "WARNING" }
+      Write-Log "RID Pool: Start=$ridStart, End=$ridEnd, Available=$availableRids" -Level "INFO"
+      
+      $ridStatus = if ($availableRids -lt 100000) { "CRITICAL" }
+                   elseif ($availableRids -lt 500000) { "WARNING" }
                    else { "OK" }
+      
+      $ridCmd = "dcdiag /test:ridmanager /s:$ridMaster /v"
       
       Add-ValidationResult -DC "Domain-Wide" -Category "RID Pool" -CheckName "Available RIDs" `
         -Status $ridStatus `
-        -Details "Available RID Pool: $availableRids"
+        -Details "Available RID Pool: $availableRids RIDs (from $ridStart to $ridEnd)" `
+        -TestCommand $ridCmd -TestOutput $ridOutput
       
-      if ($availableRids -lt 10000) {
-        $severity = if ($availableRids -lt 5000) { 'Critical' } else { 'Warning' }
-        Add-Issue -Severity $severity -Category 'RID Pool' -DC $ridMaster `
+      if ($availableRids -lt 100000) {
+        Add-Issue -Severity 'Critical' -Category 'RID Pool' -DC $ridMaster `
           -Title "Low RID pool: $availableRids RIDs remaining" `
-          -Description 'RID pool is running low - may impact object creation' `
+          -Description "RID pool is critically low - may impact object creation" `
           -Recommendation 'Contact Microsoft Support to extend RID pool or investigate excessive consumption'
+      } elseif ($availableRids -lt 500000) {
+        Add-Issue -Severity 'Warning' -Category 'RID Pool' -DC $ridMaster `
+          -Title "RID pool usage high: $availableRids RIDs remaining" `
+          -Description 'RID pool is being consumed - monitor for trends' `
+          -Recommendation 'Monitor RID consumption and plan for pool expansion if needed'
       }
+      
       return $availableRids
     } else {
+      Write-Log "Unable to parse RID pool information from dcdiag output" -Level "WARNING"
+      
       Add-ValidationResult -DC "Domain-Wide" -Category "RID Pool" -CheckName "Available RIDs" `
         -Status "UNKNOWN" `
-        -Details "Unable to parse RID pool information"
+        -Details "Unable to parse RID pool information from dcdiag output" `
+        -TestCommand "dcdiag /test:ridmanager /s:$ridMaster /v" `
+        -TestOutput $ridOutput
     }
   } catch {
     Add-ValidationResult -DC "Domain-Wide" -Category "RID Pool" -CheckName "Available RIDs" `
       -Status "UNKNOWN" `
-      -Details "Unable to check RID pool"
-    Write-Log "Unable to check RID pool" -Level "INFO"
+      -Details "Unable to check RID pool: $($_.Exception.Message)" `
+      -TestCommand "dcdiag /test:ridmanager /s:$ridMaster /v" `
+      -TestOutput "Error: $($_.Exception.Message)"
+    Write-Log "Unable to check RID pool: $($_.Exception.Message)" -Level "WARNING"
   }
   return $null
 }
@@ -780,30 +943,53 @@ function Test-DNSHealth {
   
   $missingCount = 0
   $missingSRVs = @()
+  $dnsOutputList = @()
+  
   foreach ($srv in $requiredSRV) {
     try {
       $result = Resolve-DnsName -Name $srv -Type SRV -ErrorAction Stop
       if (-not $result) {
         $missingCount++
         $missingSRVs += $srv
+        $dnsOutputList += "$srv - MISSING"
+      } else {
+        $dnsOutputList += "$srv - OK ($($result.Count) records found)"
       }
     } catch {
       $missingCount++
       $missingSRVs += $srv
+      $dnsOutputList += "$srv - MISSING (Error: $($_.Exception.Message))"
     }
   }
   
   $dnsStatus = if ($missingCount -gt 0) { "CRITICAL" } else { "OK" }
+  $dnsCmd = "Resolve-DnsName -Name '_ldap._tcp.$domainDNS' -Type SRV"
+  $dnsOutput = ($dnsOutputList -join "`n")
   
   Add-ValidationResult -DC "Domain-Wide" -Category "DNS" -CheckName "Critical SRV Records" `
     -Status $dnsStatus `
-    -Details $(if ($missingCount -gt 0) { "Missing SRV records: $($missingSRVs -join ', ')" } else { "All critical SRV records are present" })
+    -Details $(if ($missingCount -gt 0) { "Missing SRV records: $($missingSRVs -join ', ')" } else { "All critical SRV records are present" }) `
+    -TestCommand $dnsCmd -TestOutput $dnsOutput
   
   if ($missingCount -gt 0) {
     Add-Issue -Severity 'Critical' -Category 'DNS' -DC 'Domain-Wide' `
       -Title "$missingCount critical SRV record(s) missing" `
       -Description 'Required DNS SRV records not found - authentication may fail' `
       -Recommendation 'Register missing SRV records: dcdiag /fix or restart Netlogon service on all DCs'
+  }
+}
+
+function Format-LargeNumber {
+  param([long]$Number)
+  
+  if ($Number -ge 1000000000) {
+    return "$([Math]::Round($Number / 1000000000, 1))B"
+  } elseif ($Number -ge 1000000) {
+    return "$([Math]::Round($Number / 1000000, 1))M"
+  } elseif ($Number -ge 1000) {
+    return "$([Math]::Round($Number / 1000, 1))K"
+  } else {
+    return "$Number"
   }
 }
 
@@ -818,15 +1004,21 @@ function Get-ADStatistics {
       DomainControllers = $allDCs.Count
     }
     
+    $statsCmd = "Get-ADUser -Filter *; Get-ADComputer -Filter *; Get-ADGroup -Filter *"
+    $statsOutput = "Users: $($stats.Users), Computers: $($stats.Computers), Groups: $($stats.Groups), DCs: $($stats.DomainControllers)"
+    
     Add-ValidationResult -DC "Domain-Wide" -Category "Statistics" -CheckName "AD Object Count" `
       -Status "OK" `
-      -Details "Users: $($stats.Users), Computers: $($stats.Computers), Groups: $($stats.Groups), DCs: $($stats.DomainControllers)"
+      -Details "Users: $($stats.Users), Computers: $($stats.Computers), Groups: $($stats.Groups), DCs: $($stats.DomainControllers)" `
+      -TestCommand $statsCmd -TestOutput $statsOutput
     
     return $stats
   } catch {
     Add-ValidationResult -DC "Domain-Wide" -Category "Statistics" -CheckName "AD Object Count" `
       -Status "UNKNOWN" `
-      -Details "Unable to collect AD statistics"
+      -Details "Unable to collect AD statistics" `
+      -TestCommand "Get-ADUser/Computer/Group -Filter *" `
+      -TestOutput "Error: $($_.Exception.Message)"
     return @{Users=0; Computers=0; Groups=0; DomainControllers=0}
   }
 }
@@ -847,17 +1039,29 @@ foreach ($dc in $allDCs) {
   $dcHealthResults += Test-DCHealth -DCName $dc
 }
 
-# Calculate overall health score using category counts
+# Calculate overall health score
+$statusCounts = $script:validationResults | Group-Object -Property Status
+$okCount = (($statusCounts | Where-Object { $_.Name -eq "OK" }).Count) 
+if (-not $okCount) { $okCount = 0 }
+$warningCount = (($statusCounts | Where-Object { $_.Name -eq "WARNING" }).Count)
+if (-not $warningCount) { $warningCount = 0 }
+$criticalCount = (($statusCounts | Where-Object { $_.Name -eq "CRITICAL" }).Count)
+if (-not $criticalCount) { $criticalCount = 0 }
+$unknownCount = (($statusCounts | Where-Object { $_.Name -eq "UNKNOWN" }).Count)
+if (-not $unknownCount) { $unknownCount = 0 }
+
 $criticalCategoryCount = $script:issueCategoryCounts.Critical.Keys.Count
 $warningCategoryCount = $script:issueCategoryCounts.Warning.Keys.Count
 
-$healthScore = Get-HealthScore -CriticalCount $criticalCategoryCount `
-                                -WarningCount $warningCategoryCount `
-                                -TotalChecks ($allDCs.Count * 10)
+$healthScore = Get-HealthScore -CriticalCount $criticalCount `
+                                -WarningCount $warningCount `
+                                -OkCount $okCount `
+                                -UnknownCount $unknownCount
 
 $severityInfo = Get-SeverityLevel -Score $healthScore
 
 Write-Log "Health check completed. Score: $healthScore/100 ($($severityInfo.Level))"
+Write-Log "Validation Counts - OK: $okCount, Warning: $warningCount, Critical: $criticalCount, Unknown: $unknownCount"
 Write-Log "Issue Categories - Critical: $criticalCategoryCount, Warning: $warningCategoryCount"
 
 # ===================== HTML REPORT GENERATION =====================
@@ -889,7 +1093,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); 
                 gap: 20px; margin-top: 30px; }
 .metric-card { background: rgba(30, 41, 59, 0.6); border: 1px solid #334155; 
-               border-radius: 8px; padding: 20px; text-align: center; transition: all 0.2s; }
+               border-radius: 8px; padding: 20px; text-align: center; transition: all 0.2s; 
+               cursor: pointer; }
 .metric-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
 .metric-value { font-size: 36px; font-weight: 700; color: #fff; margin-bottom: 5px; }
 .metric-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; 
@@ -975,7 +1180,7 @@ tr:hover { background: rgba(59, 130, 246, 0.05); }
 .validation-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); 
                    gap: 12px; }
 .validation-item { background: #1e293b; padding: 14px; border-radius: 6px; 
-                   border-left: 3px solid #334155; transition: all 0.2s; }
+                   border-left: 3px solid #334155; transition: all 0.2s; cursor: pointer; }
 .validation-item:hover { transform: translateX(2px); box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
 .validation-item.ok { border-left-color: #10b981; }
 .validation-item.warning { border-left-color: #f59e0b; }
@@ -994,6 +1199,24 @@ tr:hover { background: rgba(59, 130, 246, 0.05); }
 .validation-details { font-size: 12px; color: #cbd5e1; line-height: 1.5; margin-bottom: 6px; }
 .validation-category { font-size: 11px; color: #64748b; display: flex; align-items: center; 
                        gap: 4px; }
+
+/* Test Details Modal */
+.test-details-panel { background: #0f172a; border: 1px solid #334155; border-radius: 8px; 
+                      padding: 20px; margin-top: 20px; display: none; }
+.test-details-panel.show { display: block; }
+.test-details-header { display: flex; justify-content: space-between; align-items: center; 
+                       margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #334155; }
+.test-details-title { font-size: 18px; font-weight: 700; color: #f1f5f9; }
+.test-details-close { background: #ef4444; color: #fff; border: none; padding: 6px 12px; 
+                      border-radius: 4px; cursor: pointer; font-weight: 600; }
+.test-details-close:hover { background: #dc2626; }
+.test-details-section { margin-bottom: 20px; }
+.test-details-label { font-size: 12px; color: #94a3b8; text-transform: uppercase; 
+                      letter-spacing: 1px; margin-bottom: 8px; font-weight: 600; }
+.test-details-content { background: #1e293b; padding: 15px; border-radius: 6px; 
+                        border-left: 3px solid #3b82f6; font-family: 'Courier New', monospace; 
+                        font-size: 12px; color: #e2e8f0; white-space: pre-wrap; 
+                        overflow-x: auto; max-height: 300px; overflow-y: auto; }
 
 /* Footer */
 .footer { text-align: center; padding: 20px; color: #64748b; font-size: 12px; 
@@ -1075,12 +1298,18 @@ if ($dcHealthResults -and $dcHealthResults.Count -gt 0) {
       "<div class='hw-info'>$($hwInfo -join ' | ')</div>" 
     } else { "" }
     
+    $eventsDisplay = if ($dcHealth.EventsCritical -gt 0) { 
+      "<span class='status-warn'>$($dcHealth.EventsCritical)</span>" 
+    } else { 
+      '<span class="status-ok">0</span>' 
+    }
+    
     $dcTableRows += @"
 <tr>
   <td><strong>$($dcHealth.Name)</strong> $badges<br><small style="color:#64748b;">$($dcHealth.IP)</small>$hwInfoHtml</td>
   <td>$servicesStatus</td>
   <td>$replStatus</td>
-  <td>$(if ($dcHealth.EventsCritical -gt 0) { "<span class='status-warn'>$($dcHealth.EventsCritical)</span>" } else { '<span class="status-ok">0</span>' })</td>
+  <td>$eventsDisplay</td>
   <td>$(if ($dcHealth.CertificatesExpired -gt 0) { "<span class='status-error'>$($dcHealth.CertificatesExpired) exp / $($dcHealth.CertificatesExpiring) soon</span>" } elseif ($dcHealth.CertificatesExpiring -gt 0) { "<span class='status-warn'>$($dcHealth.CertificatesExpiring) expiring</span>" } else { '<span class="status-ok">OK</span>' })</td>
 </tr>
 "@
@@ -1110,8 +1339,8 @@ if ($allIssues.Count -gt 0) {
   }
   
   $allIssuesSection = @"
-  <div class="section">
-    <div class="expandable-header" onclick="toggleAllIssues()">
+  <div class="section" id="allissues">
+    <div class="expandable-header" onclick="toggleSection('allissues')">
       <h2 class="section-title" style="margin:0; padding:0; border:none;">📋 All Issues ($($allIssues.Count) items)</h2>
       <span class="expandable-icon" id="allissues-icon">▶</span>
     </div>
@@ -1133,10 +1362,28 @@ foreach ($role in $fsmoRoles.GetEnumerator()) {
 # Build Validation Results Section - GROUPED BY DC with Domain-Wide FIRST
 $validationHtml = ""
 
+# Prepare validation data as JSON array with proper escaping
+$validationDataArray = @()
+foreach ($validation in $script:validationResults) {
+  $validationDataArray += @{
+    DC = $validation.DC
+    Category = $validation.Category
+    CheckName = $validation.CheckName
+    Status = $validation.Status
+    Details = $validation.Details
+    TestCommand = (Escape-HtmlAttribute $validation.TestCommand)
+    TestOutput = (Escape-HtmlAttribute $validation.TestOutput)
+    Timestamp = $validation.Timestamp.ToString('yyyy-MM-dd HH:mm:ss')
+  }
+}
+
+$validationDataJson = ($validationDataArray | ConvertTo-Json -Depth 5 -Compress)
+
 # Group validations by DC
 $groupedValidations = $script:validationResults | Group-Object -Property DC
 
 # First: Domain-Wide section
+$validationIndex = 0
 $domainWideGroup = $groupedValidations | Where-Object { $_.Name -eq "Domain-Wide" }
 if ($domainWideGroup) {
   $validationHtml += @"
@@ -1150,7 +1397,7 @@ if ($domainWideGroup) {
   foreach ($validation in $domainWideGroup.Group) {
     $statusClass = $validation.Status.ToLower()
     $validationHtml += @"
-<div class="validation-item $statusClass" data-status="$statusClass">
+<div class="validation-item $statusClass" data-status="$statusClass" data-index="$validationIndex" onclick="showTestDetails($validationIndex)">
   <div class="validation-header">
     <div class="validation-name">$($validation.CheckName)</div>
     <div class="validation-status $statusClass">$($validation.Status)</div>
@@ -1159,6 +1406,7 @@ if ($domainWideGroup) {
   <div class="validation-category">📁 $($validation.Category)</div>
 </div>
 "@
+    $validationIndex++
   }
   
   $validationHtml += "</div></div>`n"
@@ -1181,7 +1429,7 @@ foreach ($dcGroup in $dcGroups) {
   foreach ($validation in $validations) {
     $statusClass = $validation.Status.ToLower()
     $validationHtml += @"
-<div class="validation-item $statusClass" data-status="$statusClass">
+<div class="validation-item $statusClass" data-status="$statusClass" data-index="$validationIndex" onclick="showTestDetails($validationIndex)">
   <div class="validation-header">
     <div class="validation-name">$($validation.CheckName)</div>
     <div class="validation-status $statusClass">$($validation.Status)</div>
@@ -1190,21 +1438,11 @@ foreach ($dcGroup in $dcGroups) {
   <div class="validation-category">📁 $($validation.Category)</div>
 </div>
 "@
+    $validationIndex++
   }
   
   $validationHtml += "</div></div>`n"
 }
-
-# Count status types for filter buttons
-$statusCounts = $script:validationResults | Group-Object -Property Status
-$okCount = (($statusCounts | Where-Object { $_.Name -eq "OK" }).Count) 
-if (-not $okCount) { $okCount = 0 }
-$warningCount = (($statusCounts | Where-Object { $_.Name -eq "WARNING" }).Count)
-if (-not $warningCount) { $warningCount = 0 }
-$criticalCount = (($statusCounts | Where-Object { $_.Name -eq "CRITICAL" }).Count)
-if (-not $criticalCount) { $criticalCount = 0 }
-$unknownCount = (($statusCounts | Where-Object { $_.Name -eq "UNKNOWN" }).Count)
-if (-not $unknownCount) { $unknownCount = 0 }
 
 # Build Full HTML
 $html = @"
@@ -1233,15 +1471,15 @@ $css
     </div>
     
     <div class="metrics-grid">
-      <div class="metric-card metric-critical">
-        <div class="metric-value">$criticalCategoryCount</div>
+      <div class="metric-card metric-critical" onclick="scrollToElement('topissues')">
+        <div class="metric-value">$criticalCount</div>
         <div class="metric-label">Critical Issues</div>
       </div>
-      <div class="metric-card metric-warning">
-        <div class="metric-value">$warningCategoryCount</div>
+      <div class="metric-card metric-warning" onclick="scrollToElement('allissues')">
+        <div class="metric-value">$warningCount</div>
         <div class="metric-label">Warnings</div>
       </div>
-      <div class="metric-card">
+      <div class="metric-card" onclick="scrollToElement('dcsummary')">
         <div class="metric-value">$($allDCs.Count)</div>
         <div class="metric-label">Domain Controllers</div>
       </div>
@@ -1253,63 +1491,81 @@ $css
         <div class="metric-value">$($adStats.Computers)</div>
         <div class="metric-label">Computer Accounts</div>
       </div>
-      $(if ($ridPoolAvailable) {
-        "<div class='metric-card'><div class='metric-value'>$ridPoolAvailable</div><div class='metric-label'>RID Pool Available</div></div>"
-      })
+        $(if ($ridPoolAvailable) {
+          $ridFormatted = Format-LargeNumber -Number $ridPoolAvailable
+          "<div class='metric-card'><div class='metric-value'>$ridFormatted</div><div class='metric-label'>RID Pool Available</div></div>"
+        })
+    </div>
+  </div>
+  
+  <!-- DC Summary -->
+  <div class="section" id="dcsummary">
+    <div class="expandable-header" onclick="toggleSection('dcsummary')">
+      <h2 class="section-title" style="margin:0; padding:0; border:none;">📊 Domain Controllers Summary</h2>
+      <span class="expandable-icon open" id="dcsummary-icon">▶</span>
+    </div>
+    <div class="expandable-content open" id="dcsummary-content">
+      <table>
+        <thead>
+          <tr>
+            <th>Domain Controller</th>
+            <th>Services</th>
+            <th>Replication</th>
+            <th>Critical Events (24h)</th>
+            <th>Certificates</th>
+          </tr>
+        </thead>
+        <tbody>
+          $dcTableRows
+        </tbody>
+      </table>
     </div>
   </div>
   
   <!-- Top Issues -->
   $(if ($topIssues.Count -gt 0) {
     @"
-  <div class="section">
-    <h2 class="section-title">🚨 Top Priority Issues</h2>
-    $topIssuesHtml
+  <div class="section" id="topissues">
+    <div class="expandable-header" onclick="toggleSection('topissues')">
+      <h2 class="section-title" style="margin:0; padding:0; border:none;">🚨 Top Priority Issues</h2>
+      <span class="expandable-icon open" id="topissues-icon">▶</span>
+    </div>
+    <div class="expandable-content open" id="topissues-content">
+      <div style="margin-top:20px;">
+        $topIssuesHtml
+      </div>
+    </div>
   </div>
 "@
   })
-  
-  <!-- DC Summary -->
-  <div class="section">
-    <h2 class="section-title">📊 Domain Controllers Summary</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Domain Controller</th>
-          <th>Services</th>
-          <th>Replication</th>
-          <th>Critical Events (24h)</th>
-          <th>Certificates</th>
-        </tr>
-      </thead>
-      <tbody>
-        $dcTableRows
-      </tbody>
-    </table>
-  </div>
   
   <!-- All Issues (Collapsible) -->
   $allIssuesSection
   
   <!-- FSMO Roles -->
-  <div class="section">
-    <h2 class="section-title">🎯 FSMO Role Holders</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Role</th>
-          <th>Holder</th>
-        </tr>
-      </thead>
-      <tbody>
-        $fsmoTableRows
-      </tbody>
-    </table>
+  <div class="section" id="fsmo">
+    <div class="expandable-header" onclick="toggleSection('fsmo')">
+      <h2 class="section-title" style="margin:0; padding:0; border:none;">🎯 FSMO Role Holders</h2>
+      <span class="expandable-icon" id="fsmo-icon">▶</span>
+    </div>
+    <div class="expandable-content" id="fsmo-content">
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Holder</th>
+          </tr>
+        </thead>
+        <tbody>
+          $fsmoTableRows
+        </tbody>
+      </table>
+    </div>
   </div>
   
   <!-- Validation Results (Collapsible with Filters and Sections) -->
   <div class="section">
-    <div class="expandable-header" onclick="toggleValidations()">
+    <div class="expandable-header" onclick="toggleSection('validation')">
       <h2 class="section-title" style="margin:0; padding:0; border:none;">🔍 Evaluated Items ($($script:validationResults.Count) checks)</h2>
       <span class="expandable-icon" id="validation-icon">▶</span>
     </div>
@@ -1328,6 +1584,26 @@ $css
       <!-- Validation Sections -->
       $validationHtml
       
+      <!-- Test Details Panel -->
+      <div class="test-details-panel" id="testDetailsPanel">
+        <div class="test-details-header">
+          <div class="test-details-title" id="testDetailsTitle">Test Details</div>
+          <button class="test-details-close" onclick="hideTestDetails()">Close</button>
+        </div>
+        <div class="test-details-section">
+          <div class="test-details-label">Test Information</div>
+          <div class="test-details-content" id="testDetailsInfo"></div>
+        </div>
+        <div class="test-details-section">
+          <div class="test-details-label">Command Executed</div>
+          <div class="test-details-content" id="testDetailsCommand"></div>
+        </div>
+        <div class="test-details-section">
+          <div class="test-details-label">Test Output</div>
+          <div class="test-details-content" id="testDetailsOutput"></div>
+        </div>
+      </div>
+      
     </div>
   </div>
   
@@ -1339,23 +1615,24 @@ $css
 
 <script>
 let currentFilter = 'all';
+const validationData = $validationDataJson;
 
-function toggleValidations() {
-  var content = document.getElementById('validation-content');
-  var icon = document.getElementById('validation-icon');
-  
-  if (content.classList.contains('open')) {
-    content.classList.remove('open');
-    icon.classList.remove('open');
-  } else {
-    content.classList.add('open');
-    icon.classList.add('open');
+function scrollToElement(elementId) {
+  const element = document.getElementById(elementId);
+  if (element) {
+    element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const content = document.getElementById(elementId + '-content');
+    const icon = document.getElementById(elementId + '-icon');
+    if (content && !content.classList.contains('open')) {
+      content.classList.add('open');
+      icon.classList.add('open');
+    }
   }
 }
 
-function toggleAllIssues() {
-  var content = document.getElementById('allissues-content');
-  var icon = document.getElementById('allissues-icon');
+function toggleSection(sectionId) {
+  const content = document.getElementById(sectionId + '-content');
+  const icon = document.getElementById(sectionId + '-icon');
   
   if (content.classList.contains('open')) {
     content.classList.remove('open');
@@ -1369,12 +1646,10 @@ function toggleAllIssues() {
 function filterValidations(status) {
   currentFilter = status;
   
-  // Update button states
   const buttons = document.querySelectorAll('.filter-btn');
   buttons.forEach(btn => btn.classList.remove('active'));
   event.target.classList.add('active');
   
-  // Filter validation items
   const items = document.querySelectorAll('.validation-item');
   items.forEach(item => {
     if (status === 'all') {
@@ -1388,7 +1663,6 @@ function filterValidations(status) {
     }
   });
   
-  // Hide empty sections
   const sections = document.querySelectorAll('.dc-section-card');
   sections.forEach(section => {
     const visibleItems = section.querySelectorAll('.validation-item:not(.hidden)');
@@ -1398,6 +1672,26 @@ function filterValidations(status) {
       section.style.display = 'block';
     }
   });
+}
+
+function showTestDetails(index) {
+  const validation = validationData[index];
+  if (!validation) return;
+  
+  document.getElementById('testDetailsTitle').textContent = validation.CheckName + ' - ' + validation.DC;
+  
+  const infoText = 'DC: ' + validation.DC + '\\nCategory: ' + validation.Category + '\\nStatus: ' + validation.Status + '\\nDetails: ' + validation.Details + '\\nTimestamp: ' + validation.Timestamp;
+  document.getElementById('testDetailsInfo').textContent = infoText;
+  
+  document.getElementById('testDetailsCommand').textContent = validation.TestCommand || 'No command information available';
+  document.getElementById('testDetailsOutput').textContent = validation.TestOutput || 'No output information available';
+  
+  document.getElementById('testDetailsPanel').classList.add('show');
+  document.getElementById('testDetailsPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function hideTestDetails() {
+  document.getElementById('testDetailsPanel').classList.remove('show');
 }
 </script>
 
@@ -1418,12 +1712,12 @@ Write-Host "  Health Score: $healthScore/100 ($($severityInfo.Level))" -Foregrou
     default { 'Red' }
   }
 )
-Write-Host "  Issue Categories - Critical: $criticalCategoryCount, Warning: $warningCategoryCount" -ForegroundColor Cyan
-Write-Host "  Total Issues: $($allIssues.Count) | Validation Checks: $($script:validationResults.Count)" -ForegroundColor Gray
+Write-Host "  Validation Counts - OK: $okCount, Warning: $warningCount, Critical: $criticalCount, Unknown: $unknownCount" -ForegroundColor Cyan
+Write-Host "  Total Issues: $($allIssues.Count)" -ForegroundColor Gray
 
 # Email Logic
 $shouldSend = $true
-if ($EmailOnErrorOnly -and $criticalCategoryCount -eq 0) {
+if ($EmailOnErrorOnly -and $criticalCount -eq 0) {
   $shouldSend = $false
   Write-Host "`n⚠ Email suppressed (no critical issues + EmailOnErrorOnly flag)" -ForegroundColor Yellow
 }
